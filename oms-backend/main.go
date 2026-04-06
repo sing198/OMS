@@ -1,0 +1,978 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/joho/godotenv"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+)
+
+var DB *gorm.DB
+
+// ==========================================
+// 📦 Models สำหรับระบบสินค้า
+// ==========================================
+
+type Category struct {
+	ID   int    `json:"id" gorm:"primaryKey"`
+	Name string `json:"name" gorm:"unique"`
+}
+
+type Tag struct {
+	ID   int    `json:"id" gorm:"primaryKey"`
+	Name string `json:"name" gorm:"unique"`
+}
+
+type Product struct {
+	ID              int     `json:"id" gorm:"primaryKey"`
+	Name            string  `json:"name"`
+	Description     string  `json:"description"`
+	Price           float64 `json:"price"`
+	StockQuantity   int     `json:"stock_quantity"`
+	ImageUrl        string  `json:"image_url"`
+	Platform        string  `json:"platform" gorm:"default:'Steam'"`
+	DiscountPercent int     `json:"discount_percent" gorm:"default:0"`
+	IsActive        bool    `json:"is_active" gorm:"default:true"`
+
+	CategoryID uint     `json:"category_id"`
+	Category   Category `json:"category" gorm:"foreignKey:CategoryID"`
+	Tags       []Tag    `json:"tags" gorm:"many2many:product_tags;"`
+}
+
+// ==========================================
+// 🛒 Models สำหรับคำสั่งซื้อ
+// ==========================================
+
+type Order struct {
+	ID         int         `json:"id" gorm:"primaryKey"`
+	UserID     int         `json:"user_id"`
+	TotalPrice float64     `json:"total_price"`
+	Status     string      `json:"status" gorm:"default:'paid'"` // paid, shipped, delivered, cancelled
+	Items      []OrderItem `json:"items" gorm:"foreignKey:OrderID"`
+	CouponUsed string      `json:"coupon_used"`
+    CreatedAt  time.Time   `json:"created_at" gorm:"default:CURRENT_TIMESTAMP"`
+}
+
+type OrderItem struct {
+	ID                    int     `json:"id" gorm:"primaryKey"`
+	OrderID               int     `json:"order_id"`
+	ProductID             int     `json:"product_id"`
+	Quantity              int     `json:"quantity"`
+	PriceAtTimeOfPurchase float64 `json:"price_at_time_of_purchase"`
+	Product               Product `json:"product" gorm:"foreignKey:ProductID"`
+}
+
+type OrderRequest struct {
+	Items []struct {
+		ProductID int `json:"product_id"`
+		Quantity  int `json:"quantity"`
+	} `json:"items"`
+	CouponCode string `json:"coupon_code"`
+}
+
+// ==========================================
+// 👤 Models สำหรับระบบ Auth และ Admin
+// ==========================================
+
+type User struct {
+	ID           int       `json:"id" gorm:"primaryKey"`
+	Name         string    `json:"name"`
+	Email        string    `json:"email" gorm:"unique"`
+	PasswordHash string    `json:"-"`
+	Role         string    `json:"role" gorm:"default:'customer'"`
+	CreatedAt    time.Time `json:"created_at" gorm:"default:CURRENT_TIMESTAMP"`
+	Status       string    `json:"status" gorm:"default:'Active'"`
+}
+
+type RegisterInput struct {
+	Name     string `json:"name" binding:"required"`
+	Email    string `json:"email" binding:"required"`
+	Password string `json:"password" binding:"required"`
+}
+
+type LoginInput struct {
+	Email    string `json:"email" binding:"required"`
+	Password string `json:"password" binding:"required"`
+}
+
+type Coupon struct {
+	ID       int     `json:"id" gorm:"primaryKey"`
+	Code     string  `json:"code" gorm:"unique"`
+	Discount float64 `json:"discount"`
+}
+
+type AdminLog struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	AdminID   uint      `json:"admin_id"`
+	AdminName string    `json:"admin_name"`
+	Action    string    `json:"action"`
+	TargetID  string    `json:"target_id"`
+	Details   string    `json:"details"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ==========================================
+// 🛡️ Middlewares และ Helpers
+// ==========================================
+
+func AuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tokenString := c.GetHeader("Authorization")
+		if tokenString == "" {
+			c.JSON(401, gin.H{"error": "กรุณาเข้าสู่ระบบ (Missing Token)"})
+			c.Abort()
+			return
+		}
+
+		if len(tokenString) > 7 && tokenString[:7] == "Bearer " {
+			tokenString = tokenString[7:]
+		}
+
+		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			secret := os.Getenv("JWT_SECRET")
+			if secret == "" {
+				secret = "fallback_secret_do_not_use_in_prod" // ป้องกันช่องโหว่ Token ว่างเปล่า
+			}
+			return []byte(secret), nil
+		})
+
+		if err != nil || !token.Valid {
+			c.JSON(401, gin.H{"error": "Token ไม่ถูกต้อง หรือหมดอายุแล้ว"})
+			c.Abort()
+			return
+		}
+
+		if claims, ok := token.Claims.(jwt.MapClaims); ok {
+			c.Set("user_id", int(claims["user_id"].(float64)))
+			c.Set("role", claims["role"].(string))
+		} else {
+			c.JSON(401, gin.H{"error": "Token ไม่ถูกต้อง"})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+func AdminMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		roleVal, exists := c.Get("role")
+		if !exists {
+			c.JSON(403, gin.H{"error": "Forbidden: สิทธิ์การเข้าถึงถูกปฏิเสธ"})
+			c.Abort()
+			return
+		}
+
+		roleStr, ok := roleVal.(string)
+		if !ok {
+			c.JSON(403, gin.H{"error": "Forbidden: รูปแบบสิทธิ์ไม่ถูกต้อง"})
+			c.Abort()
+			return
+		}
+
+		role := strings.ToLower(roleStr)
+		if role != "admin" && role != "superadmin" {
+			c.JSON(403, gin.H{"error": "Forbidden: สิทธิ์การเข้าถึงถูกปฏิเสธ (ต้องเป็น Admin หรือ Super Admin เท่านั้น)"})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+func LogAdminAction(adminID uint, adminName string, action string, targetID string, details string) {
+	log := AdminLog{
+		AdminID:   adminID,
+		AdminName: adminName,
+		Action:    action,
+		TargetID:  targetID,
+		Details:   details,
+		CreatedAt: time.Now(),
+	}
+	if err := DB.Create(&log).Error; err != nil {
+		fmt.Println("❌ Failed to save admin log:", err)
+	}
+}
+
+func getAdminInfo(c *gin.Context) (uint, string) {
+	adminIDVal, _ := c.Get("user_id")
+	var adminID int
+	if val, ok := adminIDVal.(int); ok {
+		adminID = val
+	} else if val, ok := adminIDVal.(float64); ok {
+		adminID = int(val)
+	}
+
+	var adminUser User
+	adminName := "Unknown Admin"
+	if err := DB.Select("name").Where("id = ?", adminID).First(&adminUser).Error; err == nil {
+		adminName = adminUser.Name
+	}
+	return uint(adminID), adminName
+}
+
+func main() {
+	// ==========================================
+	// ⚙️ 1. ตั้งค่า Environment และ Database
+	// ==========================================
+	err := godotenv.Load()
+	if err != nil {
+		fmt.Println("⚠️ No .env file found, reading from Cloud Environment Variables instead")
+	}
+
+	dsn := os.Getenv("DATABASE_URL")
+	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		log.Fatal("❌ Failed to connect to database:", err)
+	}
+	fmt.Println("✅ Successfully connected to Supabase PostgreSQL!")
+
+	// เพิ่ม Models ใหม่ลงใน AutoMigrate
+	DB.AutoMigrate(&User{}, &Category{}, &Tag{}, &Product{}, &Order{}, &OrderItem{}, &Coupon{}, &AdminLog{})
+
+	// สร้างแฟ้มอัปโหลดรูปภาพถ้ายังไม่มี
+	if _, err := os.Stat("uploads"); os.IsNotExist(err) {
+		os.Mkdir("uploads", 0755)
+	}
+
+	// ==========================================
+	// 🌐 2. ตั้งค่า Router และ CORS
+	// ==========================================
+	r := gin.Default()
+	r.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"*"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: false, // 🛡️ แก้ไข: AllowOrigins=* กับ AllowCredentials=true ใช้ด้วยกันไม่ได้ตาม CORS spec
+		MaxAge:           12 * time.Hour,
+	}))
+
+	// เสิร์ฟไฟล์ Static สำหรับโฟลเดอร์ uploads
+	r.Static("/uploads", "./uploads")
+
+	// ==========================================
+	// 🟢 โซน 1: Public API (ไม่ต้องใช้ Token)
+	// ==========================================
+
+	r.GET("/ping", func(c *gin.Context) {
+		c.JSON(200, gin.H{"message": "pong! Server is running."})
+	})
+
+	r.POST("/register", func(c *gin.Context) {
+		var input RegisterInput
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(400, gin.H{"error": "กรุณากรอกข้อมูลให้ครบถ้วน"})
+			return
+		}
+
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "ไม่สามารถเข้ารหัสผ่านได้"})
+			return
+		}
+
+		newUser := User{
+			Name:         input.Name,
+			Email:        input.Email,
+			PasswordHash: string(hashedPassword),
+			Role:         "customer",
+			Status:       "Active",
+		}
+
+		if err := DB.Create(&newUser).Error; err != nil {
+			c.JSON(400, gin.H{"error": "อีเมลนี้มีในระบบแล้ว หรือบันทึกข้อมูลไม่ได้"})
+			return
+		}
+
+		c.JSON(201, gin.H{"message": "สมัครสมาชิกสำเร็จ", "user_id": newUser.ID})
+	})
+
+	r.POST("/login", func(c *gin.Context) {
+		var input LoginInput
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(400, gin.H{"error": "กรุณากรอกข้อมูลให้ครบถ้วน"})
+			return
+		}
+
+		var user User
+		if err := DB.Where("email = ?", input.Email).First(&user).Error; err != nil {
+			c.JSON(401, gin.H{"error": "อีเมลหรือรหัสผ่านไม่ถูกต้อง"})
+			return
+		}
+
+		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.Password)); err != nil {
+			c.JSON(401, gin.H{"error": "อีเมลหรือรหัสผ่านไม่ถูกต้อง"})
+			return
+		}
+
+		if user.Status == "Banned" || user.Status == "Suspended" {
+			c.JSON(403, gin.H{"error": "บัญชีของคุณถูกระงับการใช้งาน กรุณาติดต่อแอดมิน"})
+			return
+		}
+
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+			"user_id": user.ID,
+			"role":    user.Role,
+			"exp":     time.Now().Add(time.Hour * 24).Unix(),
+		})
+
+		secret := os.Getenv("JWT_SECRET")
+		if secret == "" {
+			secret = "fallback_secret_do_not_use_in_prod"
+		}
+		secretKey := []byte(secret)
+		tokenString, err := token.SignedString(secretKey)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "ไม่สามารถสร้าง Token ได้"})
+			return
+		}
+
+		c.JSON(200, gin.H{
+			"message": "เข้าสู่ระบบสำเร็จ",
+			"token":   tokenString,
+			"name":    user.Name,
+			"role":    user.Role,
+		})
+	})
+
+	// 🔍 [NEW] GET /products พร้อมระบบ Search, Filter, Pagination
+	r.GET("/products", func(c *gin.Context) {
+		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+		if page < 1 { page = 1 }
+		if limit < 1 { limit = 10 }
+		
+		search := c.Query("search")
+		categoryID := c.Query("category")
+		platform := c.Query("platform")
+
+		query := DB.Model(&Product{}).Where("is_active = ?", true)
+
+		if search != "" {
+			query = query.Where("name ILIKE ?", "%"+search+"%")
+		}
+		if categoryID != "" {
+			query = query.Where("category_id = ?", categoryID)
+		}
+		if platform != "" {
+			query = query.Where("platform = ?", platform)
+		}
+
+		var total int64
+		query.Count(&total)
+
+		var products []Product
+		offset := (page - 1) * limit
+		if err := query.Preload("Category").Preload("Tags").Offset(offset).Limit(limit).Find(&products).Error; err != nil {
+			c.JSON(500, gin.H{"error": "ไม่สามารถดึงข้อมูลสินค้าได้"})
+			return
+		}
+
+		c.JSON(200, gin.H{
+			"data": products,
+			"meta": gin.H{
+				"total": total,
+				"page":  page,
+				"limit": limit,
+				"total_pages": (total + int64(limit) - 1) / int64(limit),
+			},
+		})
+	})
+
+	r.GET("/products/:id", func(c *gin.Context) {
+		id := c.Param("id")
+		var product Product
+		if err := DB.Preload("Category").Preload("Tags").First(&product, id).Error; err != nil {
+			c.JSON(404, gin.H{"error": "ไม่พบข้อมูลเกมนี้"})
+			return
+		}
+		c.JSON(200, product)
+	})
+
+	r.POST("/validate-coupon", func(c *gin.Context) {
+		var input struct {
+			Code string `json:"code"`
+		}
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(400, gin.H{"error": "รูปแบบข้อมูลไม่ถูกต้อง"})
+			return
+		}
+
+		var coupon Coupon
+		if err := DB.Where("code = ?", input.Code).First(&coupon).Error; err != nil {
+			c.JSON(404, gin.H{"error": "โค้ดส่วนลดไม่ถูกต้องหรือหมดอายุ"})
+			return
+		}
+		c.JSON(200, gin.H{"discount": coupon.Discount})
+	})
+
+	// 🔍 [NEW] หมวดหมู่ & แท็ก
+	r.GET("/categories", func(c *gin.Context) {
+		var cats []Category
+		DB.Find(&cats)
+		c.JSON(200, cats)
+	})
+	
+	r.GET("/tags", func(c *gin.Context) {
+		var tags []Tag
+		DB.Find(&tags)
+		c.JSON(200, tags)
+	})
+
+	// ==========================================
+	// 🟡 โซน 2: Protected API (ต้อง Login / ใช้ Token)
+	// ==========================================
+	protected := r.Group("/")
+	protected.Use(AuthMiddleware())
+
+	protected.POST("/orders", func(c *gin.Context) {
+		var req OrderRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": "รูปแบบข้อมูลไม่ถูกต้อง"})
+			return
+		}
+
+		// 🛡️ ป้องกันการสร้างออเดอร์เปล่า
+		if len(req.Items) == 0 {
+			c.JSON(400, gin.H{"error": "กรุณาเลือกสินค้าอย่างน้อย 1 รายการ"})
+			return
+		}
+
+		userID, _ := c.Get("user_id")
+		tx := DB.Begin()
+		var totalPrice float64
+		var orderItems []OrderItem
+
+		for _, item := range req.Items {
+			var product Product
+			// 🔒 ล็อค Row สินค้านี้แบบ FOR UPDATE จนกว่าจะ Commit (ป้องกันคนซื้อพร้อมกันแล้วสต็อกติดลบ)
+			if err := tx.Set("gorm:query_option", "FOR UPDATE").First(&product, item.ProductID).Error; err != nil {
+				tx.Rollback()
+				c.JSON(404, gin.H{"error": fmt.Sprintf("ไม่พบสินค้า ID %d", item.ProductID)})
+				return
+			}
+			if product.StockQuantity < item.Quantity {
+				tx.Rollback()
+				c.JSON(400, gin.H{"error": fmt.Sprintf("สินค้า %s มีสต็อกไม่เพียงพอ", product.Name)})
+				return
+			}
+
+			discountAmount := product.Price * (float64(product.DiscountPercent) / 100)
+			priceAfterDiscount := product.Price - discountAmount
+
+			totalPrice += priceAfterDiscount * float64(item.Quantity)
+
+			orderItems = append(orderItems, OrderItem{
+				ProductID:             product.ID,
+				Quantity:              item.Quantity,
+				PriceAtTimeOfPurchase: priceAfterDiscount,
+			})
+
+			product.StockQuantity -= item.Quantity
+			if err := tx.Save(&product).Error; err != nil {
+				tx.Rollback()
+				c.JSON(500, gin.H{"error": "ไม่สามารถอัปเดตสต็อกได้"})
+				return
+			}
+		}
+		
+		// 🔄 คำนวณส่วนลดคูปอง (ดึงครั้งเดียว ไม่ซ้ำซ้อน)
+		finalTotalPrice := totalPrice
+		couponDiscountRate := 0.0
+
+		if req.CouponCode != "" {
+			var coupon Coupon
+			if err := tx.Where("code = ?", req.CouponCode).First(&coupon).Error; err == nil {
+				couponDiscountRate = coupon.Discount / 100
+				couponDiscount := totalPrice * couponDiscountRate
+				finalTotalPrice = totalPrice - couponDiscount
+			}
+		}
+
+		newOrder := Order{
+			UserID:     userID.(int),
+			TotalPrice: finalTotalPrice,
+			Status:     "paid",
+			CouponUsed: req.CouponCode,
+		}
+		if err := tx.Create(&newOrder).Error; err != nil {
+			tx.Rollback()
+			c.JSON(500, gin.H{"error": "ไม่สามารถสร้างคำสั่งซื้อได้"})
+			return
+		}
+
+		for i := range orderItems {
+			orderItems[i].PriceAtTimeOfPurchase = orderItems[i].PriceAtTimeOfPurchase * (1 - couponDiscountRate)
+			orderItems[i].OrderID = newOrder.ID
+			if err := tx.Create(&orderItems[i]).Error; err != nil {
+				tx.Rollback()
+				c.JSON(500, gin.H{"error": "ไม่สามารถบันทึกรายการสินค้าได้"})
+				return
+			}
+		}
+
+		tx.Commit()
+		c.JSON(201, gin.H{
+			"message":     "สร้างคำสั่งซื้อสำเร็จ",
+			"order_id":    newOrder.ID,
+			"total_price": finalTotalPrice,
+		})
+	})
+
+	// 🔍 [MODIFY] GET /orders พร้อมระบบ Pagination
+	protected.GET("/orders", func(c *gin.Context) {
+		userID := c.MustGet("user_id").(int)
+		role := c.MustGet("role").(string)
+
+		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+		if page < 1 { page = 1 }
+		if limit < 1 { limit = 10 }
+
+		query := DB.Model(&Order{})
+
+		if role != "admin" && role != "superadmin" {
+			query = query.Where("user_id = ?", userID)
+		}
+
+		var total int64
+		query.Count(&total)
+
+		var orders []Order
+		offset := (page - 1) * limit
+		if err := query.Preload("Items.Product").Order("created_at desc").Offset(offset).Limit(limit).Find(&orders).Error; err != nil {
+			c.JSON(500, gin.H{"error": "ไม่สามารถดึงข้อมูลได้"})
+			return
+		}
+
+		c.JSON(200, gin.H{
+			"data": orders,
+			"meta": gin.H{
+				"total": total,
+				"page":  page,
+				"limit": limit,
+				"total_pages": (total + int64(limit) - 1) / int64(limit),
+			},
+		})
+	})
+
+	// ==========================================
+	// 🔴 โซน 3: Admin API (ต้อง Login + เป็น Admin)
+	// ==========================================
+	admin := protected.Group("/admin") // Group เป็น /admin จะได้เข้าถึงง่าย
+	admin.Use(AdminMiddleware())
+
+	// 🔍 [NEW] Upload Image API
+	admin.POST("/upload", func(c *gin.Context) {
+		file, err := c.FormFile("image")
+		if err != nil {
+			c.JSON(400, gin.H{"error": "ไม่พบไฟล์ที่อัปโหลด"})
+			return
+		}
+
+		ext := strings.ToLower(filepath.Ext(file.Filename))
+		// 🛡️ ป้องกันการอัปโหลดไฟล์อันตราย อนุญาตเฉพาะรูปภาพ
+		if ext != ".jpg" && ext != ".jpeg" && ext != ".png" && ext != ".gif" && ext != ".webp" {
+			c.JSON(400, gin.H{"error": "อนุญาตให้อัปโหลดเฉพาะไฟล์รูปภาพเท่านั้น (jpg, jpeg, png, gif, webp)"})
+			return
+		}
+
+		newFilename := fmt.Sprintf("%d%s", time.Now().UnixNano(), ext)
+		savePath := filepath.Join("uploads", newFilename)
+
+		if err := c.SaveUploadedFile(file, savePath); err != nil {
+			c.JSON(500, gin.H{"error": "บันทึกไฟล์ไม่สำเร็จ"})
+			return
+		}
+
+		fileUrl := "/uploads/" + newFilename
+		c.JSON(200, gin.H{"url": fileUrl})
+	})
+
+	// 🔍 [NEW] Category & Tag API (Admin)
+	admin.POST("/categories", func(c *gin.Context) {
+		var cat Category
+		if err := c.ShouldBindJSON(&cat); err != nil {
+			c.JSON(400, gin.H{"error": "ข้อมูลไม่ถูกต้อง"})
+			return
+		}
+		if err := DB.Create(&cat).Error; err != nil {
+			c.JSON(500, gin.H{"error": "สร้างหมวดหมู่ไม่สำเร็จ"})
+			return
+		}
+		c.JSON(201, cat)
+	})
+
+	admin.POST("/tags", func(c *gin.Context) {
+		var tag Tag
+		if err := c.ShouldBindJSON(&tag); err != nil {
+			c.JSON(400, gin.H{"error": "ข้อมูลไม่ถูกต้อง"})
+			return
+		}
+		if err := DB.Create(&tag).Error; err != nil {
+			c.JSON(500, gin.H{"error": "สร้างแท็กไม่สำเร็จ"})
+			return
+		}
+		c.JSON(201, tag)
+	})
+
+	// 🔍 [NEW] Admin Coupon Management
+	admin.GET("/coupons", func(c *gin.Context) {
+		var coupons []Coupon
+		DB.Find(&coupons)
+		c.JSON(200, coupons)
+	})
+
+	admin.POST("/coupons", func(c *gin.Context) {
+		var coupon Coupon
+		if err := c.ShouldBindJSON(&coupon); err != nil {
+			c.JSON(400, gin.H{"error": "ข้อมูลไม่ถูกต้อง"})
+			return
+		}
+		if err := DB.Create(&coupon).Error; err != nil {
+			c.JSON(500, gin.H{"error": "สร้างคูปองไม่สำเร็จ หรือรหัสซ้ำ"})
+			return
+		}
+		
+		adminID, adminName := getAdminInfo(c)
+		LogAdminAction(adminID, adminName, "CREATE_COUPON", fmt.Sprintf("%d", coupon.ID), fmt.Sprintf("สร้างคูปองใหม่รหัส %s", coupon.Code))
+		c.JSON(201, coupon)
+	})
+
+	admin.PUT("/coupons/:id", func(c *gin.Context) {
+		id := c.Param("id")
+		var coupon Coupon
+		if err := DB.First(&coupon, id).Error; err != nil {
+			c.JSON(404, gin.H{"error": "ไม่พบคูปอง"})
+			return
+		}
+		var input Coupon
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(400, gin.H{"error": "ข้อมูลไม่ถูกต้อง"})
+			return
+		}
+		coupon.Code = input.Code
+		coupon.Discount = input.Discount
+		DB.Save(&coupon)
+		
+		adminID, adminName := getAdminInfo(c)
+		LogAdminAction(adminID, adminName, "UPDATE_COUPON", id, fmt.Sprintf("อัปเดตคูปอง %s", coupon.Code))
+		c.JSON(200, coupon)
+	})
+
+	admin.DELETE("/coupons/:id", func(c *gin.Context) {
+		id := c.Param("id")
+		DB.Delete(&Coupon{}, id)
+		
+		adminID, adminName := getAdminInfo(c)
+		LogAdminAction(adminID, adminName, "DELETE_COUPON", id, "ลบคูปอง")
+		c.JSON(200, gin.H{"message": "ลบคูปองสำเร็จ"})
+	})
+
+	// 🔍 [NEW] Admin Order Status Update
+	admin.PATCH("/orders/:id/status", func(c *gin.Context) {
+		id := c.Param("id")
+		var input struct {
+			Status string `json:"status" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(400, gin.H{"error": "ข้อมูลไม่ถูกต้อง"})
+			return
+		}
+
+		if err := DB.Model(&Order{}).Where("id = ?", id).Update("status", input.Status).Error; err != nil {
+			c.JSON(500, gin.H{"error": "อัปเดตสถานะไม่สำเร็จ"})
+			return
+		}
+
+		adminID, adminName := getAdminInfo(c)
+		LogAdminAction(adminID, adminName, "UPDATE_ORDER_STATUS", id, fmt.Sprintf("เปลี่ยนสถานะคำสั่งซื้อเป็น %s", input.Status))
+		c.JSON(200, gin.H{"message": "เปลี่ยนสถานะคำสั่งซื้อสำเร็จ"})
+	})
+
+	// API เดิม: Products Management (Admin)
+	admin.GET("/products/all", func(c *gin.Context) {
+		var products []Product
+		if err := DB.Preload("Category").Preload("Tags").Find(&products).Error; err != nil {
+			c.JSON(500, gin.H{"error": "ไม่สามารถดึงข้อมูลสินค้าได้"})
+			return
+		}
+		c.JSON(200, products)
+	})
+
+	admin.POST("/products", func(c *gin.Context) {
+		// 🔧 แก้ไข: อ่าน Body ก่อนแล้วค่อย Unmarshal เพราะ ShouldBindJSON อ่าน Body ได้แค่ครั้งเดียว
+		var newProducts []Product
+
+		bodyBytes, err := c.GetRawData()
+		if err != nil {
+			c.JSON(400, gin.H{"error": "ไม่สามารถอ่านข้อมูลได้"})
+			return
+		}
+
+		// ลอง Parse เป็น Array ก่อน
+		if jsonErr := json.Unmarshal(bodyBytes, &newProducts); jsonErr != nil {
+			// ถ้าไม่ใช่ Array ลอง Parse เป็น Object เดี่ยว
+			var singleProduct Product
+			if jsonErr2 := json.Unmarshal(bodyBytes, &singleProduct); jsonErr2 == nil {
+				newProducts = append(newProducts, singleProduct)
+			} else {
+				c.JSON(400, gin.H{"error": "รูปแบบข้อมูลไม่ถูกต้อง"})
+				return
+			}
+		}
+
+		adminID, adminName := getAdminInfo(c)
+
+		for i := range newProducts {
+			p := newProducts[i] // 🔧 แก้ไข: ใช้ index แทน range value เพื่อป้องกัน pointer issue
+			var existingProduct Product
+			err := DB.Where("name = ?", p.Name).First(&existingProduct).Error
+
+			if err == nil {
+				existingProduct.StockQuantity += p.StockQuantity
+				existingProduct.Price = p.Price
+				if dbErr := DB.Save(&existingProduct).Error; dbErr != nil {
+					c.JSON(500, gin.H{"error": fmt.Sprintf("อัปเดตสต็อกสินค้า %s ไม่สำเร็จ", p.Name)})
+					return
+				}
+				LogAdminAction(adminID, adminName, "UPDATE_STOCK", fmt.Sprintf("%d", existingProduct.ID), fmt.Sprintf("เพิ่มสต็อกสินค้า %s", p.Name))
+			} else {
+				if dbErr := DB.Create(&p).Error; dbErr != nil {
+					c.JSON(500, gin.H{"error": fmt.Sprintf("สร้างสินค้า %s ไม่สำเร็จ", p.Name)})
+					return
+				}
+				LogAdminAction(adminID, adminName, "CREATE_PRODUCT", fmt.Sprintf("%d", p.ID), fmt.Sprintf("สร้างสินค้าใหม่ %s", p.Name))
+			}
+		}
+
+		c.JSON(201, gin.H{
+			"message": "ดำเนินการจัดการสต็อกสินค้าสำเร็จ",
+			"count":   len(newProducts),
+		})
+	})
+
+	admin.PUT("/products/:id", func(c *gin.Context) {
+		id := c.Param("id")
+		var product Product
+		if err := DB.First(&product, id).Error; err != nil {
+			c.JSON(404, gin.H{"error": "ไม่พบสินค้าที่จะอัปเดต"})
+			return
+		}
+
+		var inputData Product
+		if err := c.ShouldBindJSON(&inputData); err != nil {
+			c.JSON(400, gin.H{"error": "ข้อมูลที่ส่งมาไม่ถูกต้อง"})
+			return
+		}
+
+		// อัปเดตข้อมูล
+		product.Name = inputData.Name
+		product.Description = inputData.Description
+		product.Price = inputData.Price
+		product.DiscountPercent = inputData.DiscountPercent
+		product.StockQuantity = inputData.StockQuantity
+		product.ImageUrl = inputData.ImageUrl
+		product.Platform = inputData.Platform
+		product.CategoryID = inputData.CategoryID
+		
+		// กรณีต้องการอัปเดต Tags (ลบของเก่าทิ้งใส่ใหม่)
+		if len(inputData.Tags) > 0 {
+			DB.Model(&product).Association("Tags").Replace(inputData.Tags)
+		}
+
+		if err := DB.Save(&product).Error; err != nil {
+			c.JSON(500, gin.H{"error": "อัปเดตข้อมูลไม่สำเร็จ"})
+			return
+		}
+
+		adminID, adminName := getAdminInfo(c)
+		LogAdminAction(adminID, adminName, "UPDATE_PRODUCT", id, fmt.Sprintf("อัปเดตข้อมูลสินค้า %s", product.Name))
+
+		c.JSON(200, gin.H{"message": "อัปเดตข้อมูลสำเร็จ", "data": product})
+	})
+
+	admin.PATCH("/products/:id/deactivate", func(c *gin.Context) {
+		id := c.Param("id")
+		result := DB.Model(&Product{}).Where("id = ?", id).Update("is_active", false)
+		if result.Error != nil {
+			c.JSON(500, gin.H{"error": "ไม่สามารถปิดการขายสินค้าได้"})
+			return
+		}
+		
+		adminID, adminName := getAdminInfo(c)
+		LogAdminAction(adminID, adminName, "DEACTIVATE_PRODUCT", id, "ปิดการขายสินค้า")
+		c.JSON(200, gin.H{"message": "ปิดการขายสินค้าสำเร็จ"})
+	})
+
+	admin.PATCH("/products/:id/activate", func(c *gin.Context) {
+		id := c.Param("id")
+		result := DB.Model(&Product{}).Where("id = ?", id).Update("is_active", true)
+		if result.Error != nil {
+			c.JSON(500, gin.H{"error": "ไม่สามารถเปิดการขายสินค้าได้"})
+			return
+		}
+		
+		adminID, adminName := getAdminInfo(c)
+		LogAdminAction(adminID, adminName, "ACTIVATE_PRODUCT", id, "เปิดการขายสินค้า")
+		c.JSON(200, gin.H{"message": "เปิดการขายสินค้าสำเร็จ"})
+	})
+
+	// 🔍 [MODIFY] Users API (Admin) พร้อม Pagination
+	admin.GET("/users", func(c *gin.Context) {
+		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+		search := c.Query("search")
+		
+		query := DB.Model(&User{})
+		
+		if search != "" {
+			query = query.Where("name ILIKE ? OR email ILIKE ?", "%"+search+"%", "%"+search+"%")
+		}
+
+		var total int64
+		query.Count(&total)
+
+		var users []User
+		offset := (page - 1) * limit
+		if err := query.Offset(offset).Limit(limit).Find(&users).Error; err != nil {
+			c.JSON(500, gin.H{"error": "ไม่สามารถดึงข้อมูลผู้ใช้ได้"})
+			return
+		}
+		
+		c.JSON(200, gin.H{
+			"data": users,
+			"meta": gin.H{
+				"total": total,
+				"page":  page,
+				"limit": limit,
+				"total_pages": (total + int64(limit) - 1) / int64(limit),
+			},
+		})
+	})
+
+	admin.PUT("/users/:id/role", func(c *gin.Context) {
+		roleVal, _ := c.Get("role")
+		role := roleVal.(string)
+
+		if role != "superadmin" {
+			c.JSON(403, gin.H{"error": "Access Denied: สิทธิ์นี้เฉพาะ Super Admin เท่านั้น!"})
+			return
+		}
+
+		adminID, adminName := getAdminInfo(c)
+		targetUserID := c.Param("id")
+
+		if fmt.Sprintf("%v", adminID) == targetUserID {
+			c.JSON(400, gin.H{"error": "คุณไม่สามารถแบนหรือเปลี่ยนสิทธิ์ตัวเองได้!"})
+			return
+		}
+
+		var input struct {
+			Role string `json:"role" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(400, gin.H{"error": "ข้อมูลไม่ถูกต้อง"})
+			return
+		}
+
+		if err := DB.Model(&User{}).Where("id = ?", targetUserID).Update("role", input.Role).Error; err != nil {
+			c.JSON(500, gin.H{"error": "ไม่สามารถอัปเดตสิทธิ์ได้: " + err.Error()})
+			return
+		}
+
+		LogAdminAction(adminID, adminName, "CHANGE_USER_ROLE", targetUserID, fmt.Sprintf("เปลี่ยนสิทธิ์ผู้ใช้ ID %s เป็น %s", targetUserID, input.Role))
+		c.JSON(200, gin.H{"message": "อัปเดตสิทธิ์เรียบร้อยแล้ว"})
+	})
+
+	admin.PUT("/users/:id/status", func(c *gin.Context) {
+		adminID, adminName := getAdminInfo(c)
+		targetUserID := c.Param("id")
+
+		requesterRoleVal, _ := c.Get("role")
+		requesterRole := ""
+		if requesterRoleVal != nil {
+			requesterRole = requesterRoleVal.(string)
+		}
+
+		var targetUser User
+		if err := DB.Select("role").Where("id = ?", targetUserID).First(&targetUser).Error; err != nil {
+			c.JSON(404, gin.H{"error": "ไม่พบผู้ใช้งานนี้ในระบบ"})
+			return
+		}
+
+		if strings.ToLower(targetUser.Role) == "superadmin" && requesterRole != "superadmin" {
+			c.JSON(403, gin.H{"error": "แอดมินทั่วไปไม่สามารถระงับการใช้งาน Super Admin ได้!"})
+			return
+		}
+
+		if fmt.Sprintf("%v", adminID) == targetUserID {
+			c.JSON(400, gin.H{"error": "คุณไม่สามารถแบนหรือเปลี่ยนสิทธิ์ตัวเองได้!"})
+			return
+		}
+
+		var input struct {
+			Status string `json:"status" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(400, gin.H{"error": "ข้อมูลไม่ถูกต้อง"})
+			return
+		}
+
+		if err := DB.Model(&User{}).Where("id = ?", targetUserID).Update("status", input.Status).Error; err != nil {
+			c.JSON(500, gin.H{"error": "ไม่สามารถเปลี่ยนสถานะได้: " + err.Error()})
+			return
+		}
+
+		actionName := "BAN_USER"
+		if input.Status == "Active" {
+			actionName = "UNBAN_USER"
+		}
+
+		LogAdminAction(adminID, adminName, actionName, targetUserID, fmt.Sprintf("เปลี่ยนสถานะผู้ใช้ ID %s เป็น %s", targetUserID, input.Status))
+		c.JSON(200, gin.H{"message": "เปลี่ยนสถานะผู้ใช้งานเรียบร้อยแล้ว"})
+	})
+
+	admin.GET("/admin-logs", func(c *gin.Context) {
+		var logs []AdminLog
+
+		roleVal, _ := c.Get("role")
+		role := roleVal.(string)
+
+		if role != "superadmin" {
+			c.JSON(403, gin.H{"error": "Access Denied: สิทธิ์นี้เฉพาะ Super Admin เท่านั้น!"})
+			return
+		}
+
+		if err := DB.Order("created_at desc").Find(&logs).Error; err != nil {
+			c.JSON(500, gin.H{"error": "ไม่สามารถดึงข้อมูลประวัติการทำงานได้"})
+			return
+		}
+
+		c.JSON(200, logs)
+	})
+
+	// ==========================================
+	// 🚀 4. Start Server
+	// ==========================================
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	fmt.Println("🚀 Server is running on port", port)
+	r.Run(":" + port)
+}

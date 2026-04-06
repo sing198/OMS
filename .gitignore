@@ -1,0 +1,16 @@
+# Root gitignore
+.env
+.DS_Store
+
+# Frontend
+oms-frontend/node_modules/
+oms-frontend/dist/
+oms-frontend/.env
+oms-frontend/.env.local
+
+# Backend
+oms-backend/.env
+oms-backend/uploads/
+oms-backend/tmp/
+oms-backend/main
+oms-backend/main.exe

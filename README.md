@@ -1,296 +1,145 @@
-<div align="center">
+# DGKeys
 
-# 🎮 DGKeys
+DGKeys is a game key storefront built as a portfolio project. It has a React frontend, a Go API, and a PostgreSQL database.
 
-### Digital Game Key E-Commerce Platform
+Customers can browse games, keep a cart, apply coupons, and view their orders. Admins can manage products, upload images, update order statuses, and suspend accounts. Super admins can also change user roles and read the admin activity log. The interface includes Thai and English translations.
 
-A portfolio full-stack web application for buying and selling digital game keys — built from scratch with **Golang**, **React**, and **PostgreSQL**.
+Checkout currently creates a pending order and reserves stock. Payment confirmation is manual; there is no payment gateway or automatic key delivery yet.
 
-[![Go](https://img.shields.io/badge/Go-1.20+-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://go.dev/)
-[![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
-[![Vite](https://img.shields.io/badge/Vite-8-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vitejs.dev/)
+## Running locally
 
-</div>
-
----
-
-## 📌 Overview
-
-**DGKeys** is a complete e-commerce system designed for digital game key distribution. The project demonstrates end-to-end full-stack development — from designing a responsive storefront UI to building a secure RESTful API with role-based access control and transactional database operations.
-
-> **Built as a portfolio project** to showcase proficiency in modern web technologies, API design, authentication systems, and database concurrency handling.
-
----
-
-## ✨ Key Features
-
-<table>
-<tr>
-<td width="50%">
-
-### 🛒 Customer Experience
-- JWT-based authentication (Login / Register)
-- Product browsing with real-time search & filtering
-- Platform categorization (Steam, Epic, PlayStation, Xbox)
-- Paginated product catalog
-- Shopping cart with persistent storage
-- Coupon/discount code system at checkout
-- Order history with status tracking
-- Multi-language support (EN / TH)
-
-</td>
-<td width="50%">
-
-### ⚙️ Admin Dashboard
-- Role-Based Access Control (RBAC) — Admin & Super Admin
-- Full CRUD product management with image upload
-- Order status management (Paid → Shipped → Delivered)
-- User management — role promotion, account suspension
-- Coupon creation & management
-- Admin activity logging & audit trail
-- System metrics overview
-
-</td>
-</tr>
-</table>
-
----
-
-## 🏗️ Architecture & Technical Highlights
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Client (Browser)                      │
-│              React + Vite + Tailwind CSS                 │
-└──────────────────────┬──────────────────────────────────┘
-                       │  HTTP/REST (Axios)
-                       ▼
-┌─────────────────────────────────────────────────────────┐
-│                   API Server (Go)                        │
-│              Gin Framework + JWT Auth                    │
-│                                                         │
-│  ┌──────────┐  ┌──────────┐  ┌────────────────────┐    │
-│  │   Auth   │  │  Admin   │  │  Order Processing  │    │
-│  │Middleware│  │  RBAC    │  │  (TX + Row Lock)   │    │
-│  └──────────┘  └──────────┘  └────────────────────┘    │
-└──────────────────────┬──────────────────────────────────┘
-                       │  GORM ORM
-                       ▼
-┌─────────────────────────────────────────────────────────┐
-│              PostgreSQL (Supabase)                        │
-│     Users · Products · Orders · Coupons · AdminLogs      │
-└─────────────────────────────────────────────────────────┘
-```
-
-### 🔒 Security & Concurrency
-
-| Concern | Implementation |
-|---------|---------------|
-| **Authentication** | JWT tokens with expiration, bcrypt password hashing |
-| **Authorization** | Middleware-based RBAC (User / Admin / Super Admin) |
-| **Race Conditions** | PostgreSQL `SELECT ... FOR UPDATE` row-level locking during checkout |
-| **Input Validation** | Server-side validation on all endpoints, file type/size checks on uploads |
-| **CORS** | Configured cross-origin policies for frontend-backend communication |
-
-### ⚡ Performance Decisions
-
-- **Paginated API responses** — prevents loading entire datasets; supports `page`, `limit`, and `search` query parameters
-- **Optimistic cart validation** — cart items verified against live stock data before checkout
-- **Environment-based configuration** — `VITE_API_URL` for seamless local/staging/production deployments
-- **Transaction-scoped operations** — stock deduction and order creation happen atomically within a single DB transaction
-
----
-
-## 🛠️ Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| **Frontend** | React 19, Vite 8, Tailwind CSS, React Router DOM, Axios, i18next |
-| **Backend** | Go 1.26.5+, Gin Web Framework, GORM ORM |
-| **Database** | PostgreSQL (hosted on Supabase) |
-| **Auth** | JSON Web Tokens (JWT), bcrypt |
-| **Notifications** | React Hot Toast |
-| **File Storage** | Local uploads with validation (extensible to S3/Cloudinary) |
-
----
-
-## 📸 Screenshots
-
-### Customer Experience
-
-<details>
-<summary><strong>🏠 Homepage — Product Catalog & Filtering</strong></summary>
-<br>
-
-![Homepage](screenshots/homepage.png)
-
-</details>
-
-<details>
-<summary><strong>🔍 Product Details</strong></summary>
-<br>
-
-![Product Details](screenshots/ProductDetails.png)
-
-</details>
-
-<details>
-<summary><strong>🛒 Shopping Cart</strong></summary>
-<br>
-
-![Shopping Cart](screenshots/cart.png)
-
-</details>
-
-<details>
-<summary><strong>💳 Checkout & Coupon System</strong></summary>
-<br>
-
-![Checkout](screenshots/checkout.png)
-
-</details>
-
-<details>
-<summary><strong>📦 Order History & Tracking</strong></summary>
-<br>
-
-![My Orders](screenshots/myOrders.png)
-
-</details>
-
-### Admin Dashboard
-
-<details>
-<summary><strong>📊 Product Management (CRUD)</strong></summary>
-<br>
-
-![Admin Products](screenshots/AdminProducts.png)
-
-</details>
-
-<details>
-<summary><strong>📋 Order Management & Status Updates</strong></summary>
-<br>
-
-![Admin Orders](screenshots/AdminOrders.png)
-
-</details>
-
-<details>
-<summary><strong>👥 User Management & Role Control</strong></summary>
-<br>
-
-![Admin Users](screenshots/AdminUsers.png)
-
-</details>
-
-<details>
-<summary><strong>🎟️ Coupon Management</strong></summary>
-<br>
-
-![Admin Coupons](screenshots/AdminCoupons.png)
-
-</details>
-
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-
-- **Node.js** v22.13+ (Node 24 recommended)
-- **Go** v1.26.5+
-- **PostgreSQL** database (or [Supabase](https://supabase.com) free tier)
-
-### 1. Clone the repository
+You need Go 1.26.5 or later, Node.js 24 (the version in `.nvmrc`), and a PostgreSQL database. Supabase works too if you prefer a hosted database.
 
 ```bash
 git clone https://github.com/sing198/OMS.git
 cd OMS
 ```
 
-### 2. Backend Setup
+### Backend
 
 ```bash
 cd oms-backend
-
-# Install Go dependencies
-go mod tidy
-
-# Configure environment variables
 cp .env.example .env
-# Edit .env with your DATABASE_URL and JWT_SECRET
-
-# Start the server
-go run .
-# → API running at http://localhost:8080
 ```
 
-### 3. Frontend Setup
+Set `DATABASE_URL` to your database connection string. Generate a secret with the command below and use its output as `JWT_SECRET`:
+
+```bash
+openssl rand -hex 32
+```
+
+The server requires a secret of at least 32 bytes. It creates or updates the database tables on startup, so use a development database when trying it out.
+
+```bash
+go run .
+```
+
+The API runs on `http://localhost:8080`. You can check it at `/ping`. Uploaded images are saved in `oms-backend/uploads/`.
+
+### Frontend
+
+Open another terminal from the repository root:
 
 ```bash
 cd oms-frontend
-
-# Install dependencies
+nvm use
+cp .env.example .env
 npm ci
-
-# Start development server
 npm run dev
-# → App running at http://localhost:5173
 ```
 
----
+If you don't use nvm, install Node.js 24 before running these commands and skip `nvm use`.
 
-## 📁 Project Structure
+Open `http://localhost:5173`. The frontend uses `VITE_API_URL` from `.env`, which defaults to `http://localhost:8080`.
 
-```
-OMS/
-├── oms-backend/
-│   ├── main.go              # API routes, middleware, handlers
-│   ├── go.mod               # Go module dependencies
-│   └── uploads/             # Uploaded product images
-│
-├── oms-frontend/
-│   ├── src/
-│   │   ├── pages/           # React page components
-│   │   │   ├── Products.jsx        # Product catalog
-│   │   │   ├── ProductDetail.jsx   # Single product view
-│   │   │   ├── Cart.jsx            # Shopping cart
-│   │   │   ├── Checkout.jsx        # Checkout & payment
-│   │   │   ├── MyOrders.jsx        # Order history
-│   │   │   ├── AdminDashboard.jsx  # Product CRUD
-│   │   │   ├── AdminOrders.jsx     # Order management
-│   │   │   ├── AdminUsers.jsx      # User management
-│   │   │   ├── AdminCoupons.jsx    # Coupon management
-│   │   │   └── AdminLogs.jsx       # Audit trail
-│   │   ├── App.jsx          # Router & protected routes
-│   │   └── i18n.js          # Internationalization config
-│   └── package.json
-│
-├── screenshots/             # README screenshots
-└── README.md
+New accounts have the `customer` role. To try the admin pages, register an account and change that account's role to `superadmin` directly in your development database. There is no seeded admin account.
+
+## Code layout
+
+- `oms-backend/main.go` — models, authentication, and most API routes.
+- `oms-backend/orders.go` — order validation, pricing, and stock reservation.
+- `oms-backend/security_test.go` — authentication and order regression tests.
+- `oms-frontend/src/pages/` — storefront and admin pages.
+- `oms-frontend/src/locales/` — Thai and English translation files.
+- `screenshots/` — screenshots of the application.
+
+The frontend uses React, Vite, Tailwind CSS, Axios, and i18next. The backend uses Gin for HTTP routes and GORM for database access.
+
+Passwords are hashed with bcrypt. Authentication uses JWTs, but account status and roles are read from the database on each authenticated request, so a ban or role change applies to existing sessions.
+
+Order creation runs inside a database transaction. Product rows are locked in ID order before stock is checked and reduced. If a write or the commit fails, the API returns an error instead of confirming the order.
+
+## Checks
+
+From `oms-backend/`:
+
+```bash
+go test -race ./...
+go vet ./...
 ```
 
----
+The tests use SQL mocks. They cover invalid quantities, unavailable stock, transaction failures, and account permissions; they do not replace integration tests against PostgreSQL.
 
-## 📝 License
+From `oms-frontend/`:
 
-This project was built for **educational and portfolio purposes**.  
-Feel free to explore the code and reach out if you have questions.
+```bash
+npm run build
+npm run lint
+```
 
-<div align="center">
+The build passes. Project-wide lint still reports issues in several existing pages, and dependency audit findings remain to be addressed.
 
----
+## Still to do
 
-**Built with 🤍 by [sing198](https://github.com/sing198)**
+- Connect payment verification and key delivery.
+- Add expiry and stock release for abandoned pending orders. Stock reservations currently need manual follow-up.
+- Add integration tests with PostgreSQL and browser tests for checkout.
+- Resolve the remaining lint and dependency audit findings.
 
-</div>
+## Screenshots
 
-## Payment and verification status
+These screenshots were taken before the checkout changes. The current checkout creates a pending order and no longer shows the mock payment QR code.
 
-Checkout creates a `pending` order and reserves stock. There is no payment gateway or automatic key/email delivery. An administrator must verify payment independently before marking the order paid. The delivery email is stored on the order. Pending stock reservations currently require manual operational follow-up; automatic expiry is not implemented.
+![Product catalog](screenshots/homepage.png)
 
-Set a random JWT_SECRET of at least 32 bytes (`openssl rand -hex 32`). The server refuses to start without it. Account status and role are checked against the database on every authenticated request.
+<details>
+<summary>Storefront pages</summary>
 
-Run `go test ./...` and `go vet ./...` in oms-backend. In oms-frontend, use Node 24 (`nvm use`), then `npm ci`, `npm run build`, and `npm run lint`.
+### Product details
+
+![Product details](screenshots/ProductDetails.png)
+
+### Cart
+
+![Cart](screenshots/cart.png)
+
+### Checkout (earlier version)
+
+![Earlier checkout screen](screenshots/checkout.png)
+
+### Order history
+
+![Order history](screenshots/myOrders.png)
+
+</details>
+
+<details>
+<summary>Admin pages</summary>
+
+### Products
+
+![Product management](screenshots/AdminProducts.png)
+
+### Orders
+
+![Order management](screenshots/AdminOrders.png)
+
+### Users
+
+![User management](screenshots/AdminUsers.png)
+
+### Coupons
+
+![Coupon management](screenshots/AdminCoupons.png)
+
+</details>

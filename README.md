@@ -4,7 +4,7 @@
 
 ### Digital Game Key E-Commerce Platform
 
-A production-grade full-stack web application for buying and selling digital game keys — built from scratch with **Golang**, **React**, and **PostgreSQL**.
+A portfolio full-stack web application for buying and selling digital game keys — built from scratch with **Golang**, **React**, and **PostgreSQL**.
 
 [![Go](https://img.shields.io/badge/Go-1.20+-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://go.dev/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
@@ -107,7 +107,7 @@ A production-grade full-stack web application for buying and selling digital gam
 | Layer | Technology |
 |-------|-----------|
 | **Frontend** | React 19, Vite 8, Tailwind CSS, React Router DOM, Axios, i18next |
-| **Backend** | Go 1.20+, Gin Web Framework, GORM ORM |
+| **Backend** | Go 1.26.5+, Gin Web Framework, GORM ORM |
 | **Database** | PostgreSQL (hosted on Supabase) |
 | **Auth** | JSON Web Tokens (JWT), bcrypt |
 | **Notifications** | React Hot Toast |
@@ -199,8 +199,8 @@ A production-grade full-stack web application for buying and selling digital gam
 
 ### Prerequisites
 
-- **Node.js** v18+
-- **Go** v1.20+
+- **Node.js** v22.13+ (Node 24 recommended)
+- **Go** v1.26.5+
 - **PostgreSQL** database (or [Supabase](https://supabase.com) free tier)
 
 ### 1. Clone the repository
@@ -223,7 +223,7 @@ cp .env.example .env
 # Edit .env with your DATABASE_URL and JWT_SECRET
 
 # Start the server
-go run main.go
+go run .
 # → API running at http://localhost:8080
 ```
 
@@ -233,7 +233,7 @@ go run main.go
 cd oms-frontend
 
 # Install dependencies
-npm install
+npm ci
 
 # Start development server
 npm run dev
@@ -286,3 +286,11 @@ Feel free to explore the code and reach out if you have questions.
 **Built with 🤍 by [sing198](https://github.com/sing198)**
 
 </div>
+
+## Payment and verification status
+
+Checkout creates a `pending` order and reserves stock. There is no payment gateway or automatic key/email delivery. An administrator must verify payment independently before marking the order paid. The delivery email is stored on the order. Pending stock reservations currently require manual operational follow-up; automatic expiry is not implemented.
+
+Set a random JWT_SECRET of at least 32 bytes (`openssl rand -hex 32`). The server refuses to start without it. Account status and role are checked against the database on every authenticated request.
+
+Run `go test ./...` and `go vet ./...` in oms-backend. In oms-frontend, use Node 24 (`nvm use`), then `npm ci`, `npm run build`, and `npm run lint`.

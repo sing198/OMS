@@ -24,7 +24,7 @@
   "apply": "APPLY",
   "amount_to_pay": "Amount to Pay",
   "confirm_payment": "CONFIRM PAYMENT",
-  "about_game": "ABOUT THE GAME", 
+  "about_game": "ABOUT THE GAME",
   "add_to_cart": "ADD TO CART",
   "buy_now": "BUY NOW",
   "platform": "Platform",
@@ -34,6 +34,10 @@
   "out_of_stock": "Out of Stock",
   "order_summary": "ORDER SUMMARY",
   "subtotal": "Subtotal",
-  "total": "Total"
-
+  "total": "Total",
+  "creating_order": "Creating order…",
+  "order_pending_confirmation": "Order created. Payment confirmation is pending.",
+  "place_order": "Place order",
+  "manual_payment_notice": "Your order will await payment confirmation by an administrator. No payment is collected and no game key is sent at this step. Contact the store for payment instructions.",
+  "delivery_email_notice": "This email is saved with your order for delivery after payment is confirmed."
 }

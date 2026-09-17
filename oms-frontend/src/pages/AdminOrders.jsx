@@ -163,6 +163,7 @@ export default function AdminOrders() {
               <div>
                 <h3 className="text-xl font-black text-white">Order Details #{selectedOrder.id}</h3>
                 <p className="text-gray-500 text-sm mt-1">User ID: {selectedOrder.user_id}</p>
+                <p className="text-gray-400 text-sm mt-1">Delivery email: {selectedOrder.delivery_email || '—'}</p>
                 <p className="text-gray-500 text-sm mt-1">Status: <span className="text-emerald-400 font-bold uppercase">{selectedOrder.status}</span></p>
               </div>
               <div className="text-right">

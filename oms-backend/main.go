@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"errors"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -56,13 +57,14 @@ type Product struct {
 // ==========================================
 
 type Order struct {
-	ID         int         `json:"id" gorm:"primaryKey"`
-	UserID     int         `json:"user_id"`
-	TotalPrice float64     `json:"total_price"`
-	Status     string      `json:"status" gorm:"default:'paid'"` // paid, shipped, delivered, cancelled
-	Items      []OrderItem `json:"items" gorm:"foreignKey:OrderID"`
-	CouponUsed string      `json:"coupon_used"`
-    CreatedAt  time.Time   `json:"created_at" gorm:"default:CURRENT_TIMESTAMP"`
+	ID            int         `json:"id" gorm:"primaryKey"`
+	UserID        int         `json:"user_id"`
+	TotalPrice    float64     `json:"total_price"`
+	Status        string      `json:"status" gorm:"default:'pending'"` // paid, shipped, delivered, cancelled
+	Items         []OrderItem `json:"items" gorm:"foreignKey:OrderID"`
+	CouponUsed    string      `json:"coupon_used"`
+	DeliveryEmail string      `json:"delivery_email"`
+	CreatedAt     time.Time   `json:"created_at" gorm:"default:CURRENT_TIMESTAMP"`
 }
 
 type OrderItem struct {
@@ -76,10 +78,11 @@ type OrderItem struct {
 
 type OrderRequest struct {
 	Items []struct {
-		ProductID int `json:"product_id"`
-		Quantity  int `json:"quantity"`
-	} `json:"items"`
-	CouponCode string `json:"coupon_code"`
+		ProductID int `json:"product_id" binding:"required,gt=0"`
+		Quantity  int `json:"quantity" binding:"required,gt=0,lte=10000"`
+	} `json:"items" binding:"required,min=1,max=100,dive"`
+	CouponCode    string `json:"coupon_code"`
+	DeliveryEmail string `json:"delivery_email" binding:"required,email"`
 }
 
 // ==========================================
@@ -127,6 +130,11 @@ type AdminLog struct {
 // 🛡️ Middlewares และ Helpers
 // ==========================================
 
+type authClaims struct {
+	UserID int `json:"user_id"`
+	jwt.RegisteredClaims
+}
+
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tokenString := c.GetHeader("Authorization")
@@ -140,28 +148,34 @@ func AuthMiddleware() gin.HandlerFunc {
 			tokenString = tokenString[7:]
 		}
 
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			secret := os.Getenv("JWT_SECRET")
-			if secret == "" {
-				secret = "fallback_secret_do_not_use_in_prod" // ป้องกันช่องโหว่ Token ว่างเปล่า
-			}
+		secret := os.Getenv("JWT_SECRET")
+		if len(secret) < 32 {
+			c.AbortWithStatusJSON(503, gin.H{"error": "Authentication is not configured"})
+			return
+		}
+		claims := &authClaims{}
+		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
 			return []byte(secret), nil
-		})
-
-		if err != nil || !token.Valid {
-			c.JSON(401, gin.H{"error": "Token ไม่ถูกต้อง หรือหมดอายุแล้ว"})
-			c.Abort()
+		}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
+		if err != nil || !token.Valid || claims.UserID <= 0 {
+			c.AbortWithStatusJSON(401, gin.H{"error": "Token ไม่ถูกต้อง หรือหมดอายุแล้ว"})
 			return
 		}
-
-		if claims, ok := token.Claims.(jwt.MapClaims); ok {
-			c.Set("user_id", int(claims["user_id"].(float64)))
-			c.Set("role", claims["role"].(string))
-		} else {
-			c.JSON(401, gin.H{"error": "Token ไม่ถูกต้อง"})
-			c.Abort()
+		var user User
+		if err := DB.First(&user, claims.UserID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				c.AbortWithStatusJSON(401, gin.H{"error": "ไม่พบผู้ใช้งาน"})
+			} else {
+				c.AbortWithStatusJSON(503, gin.H{"error": "ไม่สามารถตรวจสอบผู้ใช้งานได้"})
+			}
 			return
 		}
+		if user.Status != "Active" {
+			c.AbortWithStatusJSON(403, gin.H{"error": "บัญชีถูกระงับการใช้งาน"})
+			return
+		}
+		c.Set("user_id", user.ID)
+		c.Set("role", strings.ToLower(user.Role))
 		c.Next()
 	}
 }
@@ -232,6 +246,9 @@ func main() {
 		fmt.Println("⚠️ No .env file found, reading from Cloud Environment Variables instead")
 	}
 
+	if len(os.Getenv("JWT_SECRET")) < 32 {
+		log.Fatal("JWT_SECRET must contain at least 32 bytes; generate a random secret before starting")
+	}
 	dsn := os.Getenv("DATABASE_URL")
 	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
@@ -240,7 +257,9 @@ func main() {
 	fmt.Println("✅ Successfully connected to Supabase PostgreSQL!")
 
 	// เพิ่ม Models ใหม่ลงใน AutoMigrate
-	DB.AutoMigrate(&User{}, &Category{}, &Tag{}, &Product{}, &Order{}, &OrderItem{}, &Coupon{}, &AdminLog{})
+	if err := DB.AutoMigrate(&User{}, &Category{}, &Tag{}, &Product{}, &Order{}, &OrderItem{}, &Coupon{}, &AdminLog{}); err != nil {
+		log.Fatal("Failed to migrate database: ", err)
+	}
 
 	// สร้างแฟ้มอัปโหลดรูปภาพถ้ายังไม่มี
 	if _, err := os.Stat("uploads"); os.IsNotExist(err) {
@@ -330,9 +349,6 @@ func main() {
 		})
 
 		secret := os.Getenv("JWT_SECRET")
-		if secret == "" {
-			secret = "fallback_secret_do_not_use_in_prod"
-		}
 		secretKey := []byte(secret)
 		tokenString, err := token.SignedString(secretKey)
 		if err != nil {
@@ -352,9 +368,13 @@ func main() {
 	r.GET("/products", func(c *gin.Context) {
 		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
-		if page < 1 { page = 1 }
-		if limit < 1 { limit = 10 }
-		
+		if page < 1 {
+			page = 1
+		}
+		if limit < 1 {
+			limit = 10
+		}
+
 		search := c.Query("search")
 		categoryID := c.Query("category")
 		platform := c.Query("platform")
@@ -384,9 +404,9 @@ func main() {
 		c.JSON(200, gin.H{
 			"data": products,
 			"meta": gin.H{
-				"total": total,
-				"page":  page,
-				"limit": limit,
+				"total":       total,
+				"page":        page,
+				"limit":       limit,
 				"total_pages": (total + int64(limit) - 1) / int64(limit),
 			},
 		})
@@ -425,7 +445,7 @@ func main() {
 		DB.Find(&cats)
 		c.JSON(200, cats)
 	})
-	
+
 	r.GET("/tags", func(c *gin.Context) {
 		var tags []Tag
 		DB.Find(&tags)
@@ -438,99 +458,7 @@ func main() {
 	protected := r.Group("/")
 	protected.Use(AuthMiddleware())
 
-	protected.POST("/orders", func(c *gin.Context) {
-		var req OrderRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": "รูปแบบข้อมูลไม่ถูกต้อง"})
-			return
-		}
-
-		// 🛡️ ป้องกันการสร้างออเดอร์เปล่า
-		if len(req.Items) == 0 {
-			c.JSON(400, gin.H{"error": "กรุณาเลือกสินค้าอย่างน้อย 1 รายการ"})
-			return
-		}
-
-		userID, _ := c.Get("user_id")
-		tx := DB.Begin()
-		var totalPrice float64
-		var orderItems []OrderItem
-
-		for _, item := range req.Items {
-			var product Product
-			// 🔒 ล็อค Row สินค้านี้แบบ FOR UPDATE จนกว่าจะ Commit (ป้องกันคนซื้อพร้อมกันแล้วสต็อกติดลบ)
-			if err := tx.Set("gorm:query_option", "FOR UPDATE").First(&product, item.ProductID).Error; err != nil {
-				tx.Rollback()
-				c.JSON(404, gin.H{"error": fmt.Sprintf("ไม่พบสินค้า ID %d", item.ProductID)})
-				return
-			}
-			if product.StockQuantity < item.Quantity {
-				tx.Rollback()
-				c.JSON(400, gin.H{"error": fmt.Sprintf("สินค้า %s มีสต็อกไม่เพียงพอ", product.Name)})
-				return
-			}
-
-			discountAmount := product.Price * (float64(product.DiscountPercent) / 100)
-			priceAfterDiscount := product.Price - discountAmount
-
-			totalPrice += priceAfterDiscount * float64(item.Quantity)
-
-			orderItems = append(orderItems, OrderItem{
-				ProductID:             product.ID,
-				Quantity:              item.Quantity,
-				PriceAtTimeOfPurchase: priceAfterDiscount,
-			})
-
-			product.StockQuantity -= item.Quantity
-			if err := tx.Save(&product).Error; err != nil {
-				tx.Rollback()
-				c.JSON(500, gin.H{"error": "ไม่สามารถอัปเดตสต็อกได้"})
-				return
-			}
-		}
-		
-		// 🔄 คำนวณส่วนลดคูปอง (ดึงครั้งเดียว ไม่ซ้ำซ้อน)
-		finalTotalPrice := totalPrice
-		couponDiscountRate := 0.0
-
-		if req.CouponCode != "" {
-			var coupon Coupon
-			if err := tx.Where("code = ?", req.CouponCode).First(&coupon).Error; err == nil {
-				couponDiscountRate = coupon.Discount / 100
-				couponDiscount := totalPrice * couponDiscountRate
-				finalTotalPrice = totalPrice - couponDiscount
-			}
-		}
-
-		newOrder := Order{
-			UserID:     userID.(int),
-			TotalPrice: finalTotalPrice,
-			Status:     "paid",
-			CouponUsed: req.CouponCode,
-		}
-		if err := tx.Create(&newOrder).Error; err != nil {
-			tx.Rollback()
-			c.JSON(500, gin.H{"error": "ไม่สามารถสร้างคำสั่งซื้อได้"})
-			return
-		}
-
-		for i := range orderItems {
-			orderItems[i].PriceAtTimeOfPurchase = orderItems[i].PriceAtTimeOfPurchase * (1 - couponDiscountRate)
-			orderItems[i].OrderID = newOrder.ID
-			if err := tx.Create(&orderItems[i]).Error; err != nil {
-				tx.Rollback()
-				c.JSON(500, gin.H{"error": "ไม่สามารถบันทึกรายการสินค้าได้"})
-				return
-			}
-		}
-
-		tx.Commit()
-		c.JSON(201, gin.H{
-			"message":     "สร้างคำสั่งซื้อสำเร็จ",
-			"order_id":    newOrder.ID,
-			"total_price": finalTotalPrice,
-		})
-	})
+	protected.POST("/orders", createOrderHandler)
 
 	// 🔍 [MODIFY] GET /orders พร้อมระบบ Pagination
 	protected.GET("/orders", func(c *gin.Context) {
@@ -539,8 +467,12 @@ func main() {
 
 		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
-		if page < 1 { page = 1 }
-		if limit < 1 { limit = 10 }
+		if page < 1 {
+			page = 1
+		}
+		if limit < 1 {
+			limit = 10
+		}
 
 		query := DB.Model(&Order{})
 
@@ -561,9 +493,9 @@ func main() {
 		c.JSON(200, gin.H{
 			"data": orders,
 			"meta": gin.H{
-				"total": total,
-				"page":  page,
-				"limit": limit,
+				"total":       total,
+				"page":        page,
+				"limit":       limit,
 				"total_pages": (total + int64(limit) - 1) / int64(limit),
 			},
 		})
@@ -646,7 +578,7 @@ func main() {
 			c.JSON(500, gin.H{"error": "สร้างคูปองไม่สำเร็จ หรือรหัสซ้ำ"})
 			return
 		}
-		
+
 		adminID, adminName := getAdminInfo(c)
 		LogAdminAction(adminID, adminName, "CREATE_COUPON", fmt.Sprintf("%d", coupon.ID), fmt.Sprintf("สร้างคูปองใหม่รหัส %s", coupon.Code))
 		c.JSON(201, coupon)
@@ -667,7 +599,7 @@ func main() {
 		coupon.Code = input.Code
 		coupon.Discount = input.Discount
 		DB.Save(&coupon)
-		
+
 		adminID, adminName := getAdminInfo(c)
 		LogAdminAction(adminID, adminName, "UPDATE_COUPON", id, fmt.Sprintf("อัปเดตคูปอง %s", coupon.Code))
 		c.JSON(200, coupon)
@@ -676,7 +608,7 @@ func main() {
 	admin.DELETE("/coupons/:id", func(c *gin.Context) {
 		id := c.Param("id")
 		DB.Delete(&Coupon{}, id)
-		
+
 		adminID, adminName := getAdminInfo(c)
 		LogAdminAction(adminID, adminName, "DELETE_COUPON", id, "ลบคูปอง")
 		c.JSON(200, gin.H{"message": "ลบคูปองสำเร็จ"})
@@ -788,7 +720,7 @@ func main() {
 		product.ImageUrl = inputData.ImageUrl
 		product.Platform = inputData.Platform
 		product.CategoryID = inputData.CategoryID
-		
+
 		// กรณีต้องการอัปเดต Tags (ลบของเก่าทิ้งใส่ใหม่)
 		if len(inputData.Tags) > 0 {
 			DB.Model(&product).Association("Tags").Replace(inputData.Tags)
@@ -812,7 +744,7 @@ func main() {
 			c.JSON(500, gin.H{"error": "ไม่สามารถปิดการขายสินค้าได้"})
 			return
 		}
-		
+
 		adminID, adminName := getAdminInfo(c)
 		LogAdminAction(adminID, adminName, "DEACTIVATE_PRODUCT", id, "ปิดการขายสินค้า")
 		c.JSON(200, gin.H{"message": "ปิดการขายสินค้าสำเร็จ"})
@@ -825,7 +757,7 @@ func main() {
 			c.JSON(500, gin.H{"error": "ไม่สามารถเปิดการขายสินค้าได้"})
 			return
 		}
-		
+
 		adminID, adminName := getAdminInfo(c)
 		LogAdminAction(adminID, adminName, "ACTIVATE_PRODUCT", id, "เปิดการขายสินค้า")
 		c.JSON(200, gin.H{"message": "เปิดการขายสินค้าสำเร็จ"})
@@ -836,9 +768,9 @@ func main() {
 		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
 		search := c.Query("search")
-		
+
 		query := DB.Model(&User{})
-		
+
 		if search != "" {
 			query = query.Where("name ILIKE ? OR email ILIKE ?", "%"+search+"%", "%"+search+"%")
 		}
@@ -852,13 +784,13 @@ func main() {
 			c.JSON(500, gin.H{"error": "ไม่สามารถดึงข้อมูลผู้ใช้ได้"})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"data": users,
 			"meta": gin.H{
-				"total": total,
-				"page":  page,
-				"limit": limit,
+				"total":       total,
+				"page":        page,
+				"limit":       limit,
 				"total_pages": (total + int64(limit) - 1) / int64(limit),
 			},
 		})

@@ -6,26 +6,28 @@ import Navbar from './Navbar'; // 👉 อย่าลืม Import Navbar
 import { useTranslation } from 'react-i18next';
 
 export default function Checkout() {
-  const [cartItems, setCartItems] = useState([]);
+  const [cartItems] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('checkout_items'));
+      return Array.isArray(saved) ? saved : [];
+    } catch {
+      return [];
+    }
+  });
   const [email, setEmail] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [appliedCoupon, setAppliedCoupon] = useState('');
   const navigate = useNavigate();
 
-  const { t, i18n } = useTranslation();
-
-  const changeLanguage = (lng) => {
-    i18n.changeLanguage(lng);
-    localStorage.setItem('language', lng); // บันทึกค่าไว้เผื่อลูกค้ารีเฟรชหน้าเว็บ
-  };
+  const { t } = useTranslation();
 
   useEffect(() => {
-    const savedCheckout = JSON.parse(localStorage.getItem('checkout_items')) || [];
-    if (savedCheckout.length === 0) {
+    if (cartItems.length === 0) {
       toast.error('ไม่มีสินค้าที่เลือกชำระเงิน');
       navigate('/cart');
       return;
     }
-    setCartItems(savedCheckout);
-  }, [navigate]);
+  }, [navigate, cartItems]);
 
   const totalPrice = cartItems.reduce((sum, item) => {
     const priceAfterProductDiscount = item.price - (item.price * (item.discount_percent || 0) / 100);
@@ -39,8 +41,11 @@ export default function Checkout() {
     try {
       const res = await axios.post(`${import.meta.env.VITE_API_URL || 'http://localhost:8080'}/validate-coupon`, { code: couponCode });
       setDiscountPercent(res.data.discount);
+      setAppliedCoupon(couponCode);
       toast.success(`ใช้โค้ดลดราคา ${res.data.discount}% สำเร็จ!`);
-    } catch (err) {
+    } catch {
+      setDiscountPercent(0);
+      setAppliedCoupon('');
       toast.error('โค้ดไม่ถูกต้อง');
     }
   };
@@ -49,6 +54,7 @@ export default function Checkout() {
 
   const confirmPayment = async (e) => {
     e.preventDefault();
+    if (submitting) return;
     
     if (!email) {
       toast.error('กรุณาระบุอีเมลเพื่อรับคีย์เกม');
@@ -62,7 +68,8 @@ export default function Checkout() {
       return;
     }
 
-    const loadingToast = toast.loading('กำลังตรวจสอบยอดเงินและจัดส่งคีย์...'); 
+    setSubmitting(true);
+    const loadingToast = toast.loading(t('creating_order')); 
 
     try {
       const orderItems = cartItems.map(item => ({
@@ -72,7 +79,8 @@ export default function Checkout() {
 
       const payload = {
         items: orderItems,
-        coupon_code: couponCode // ถ้ายังไม่ได้ใช้โค้ด ค่าจะเป็น '' ซึ่งหลังบ้านจะข้ามไปเองครับ
+        coupon_code: appliedCoupon,
+        delivery_email: email
       };
 
       await axios.post(
@@ -90,11 +98,13 @@ export default function Checkout() {
       localStorage.removeItem('checkout_items'); 
       window.dispatchEvent(new Event('cartUpdated')); // 👉 อัปเดต Navbar
 
-      toast.success(`ชำระเงินสำเร็จ! คีย์เกมถูกส่งไปที่ ${email} แล้ว 🎮`, { id: loadingToast, duration: 5000 });
-      navigate('/products'); 
+      toast.success(t('order_pending_confirmation'), { id: loadingToast, duration: 5000 });
+      navigate('/my-orders'); 
 
     } catch (error) {
-      toast.error('ชำระเงินไม่สำเร็จ: ' + (error.response?.data?.error || error.message), { id: loadingToast });
+      toast.error('สร้างคำสั่งซื้อไม่สำเร็จ: ' + (error.response?.data?.error || error.message), { id: loadingToast });
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -143,7 +153,7 @@ export default function Checkout() {
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full px-4 py-3 bg-[#0b0c10] border border-gray-700 rounded-xl text-white focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors"
                 />
-                <p className="text-xs text-gray-500 mt-2">{t('game_key_delivery_info')}</p>
+                <p className="text-xs text-gray-500 mt-2">{t('delivery_email_notice')}</p>
               </div>
 
               {/* Coupon Code */}
@@ -152,7 +162,7 @@ export default function Checkout() {
                 <div className="flex gap-2">
                   <input 
                     value={couponCode}
-                    onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
+                    onChange={(e) => { setCouponCode(e.target.value.toUpperCase()); setAppliedCoupon(''); setDiscountPercent(0); }}
                     placeholder="e.g. GAME10"
                     className="flex-1 px-4 py-3 bg-[#0b0c10] border border-gray-700 rounded-xl text-white focus:outline-none focus:border-emerald-500"
                   />
@@ -172,26 +182,14 @@ export default function Checkout() {
                 )}
               </div>
     
-              {/* QR Code Section */}
-              <div className="bg-[#0b0c10] p-6 rounded-2xl border border-gray-800 flex flex-col items-center mb-8">
-                <p className="text-gray-400 text-sm font-bold mb-4 uppercase tracking-widest">{t('scan_to_pay')}</p>
-                <div className="bg-white p-4 rounded-2xl shadow-inner mb-4">
-                  <img 
-                    src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=MockPaymentTotal-${finalTotal}`} 
-                    alt="PromptPay QR" 
-                    className="w-36 h-36"
-                  />
-                </div>
-                <p className="text-sm text-gray-500">
-                  {t('amount_to_pay')}: <span className="text-white font-black text-lg ml-1">฿{finalTotal.toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
-                </p>
-              </div>
+              <p className="text-amber-300 text-sm mb-8">{t('manual_payment_notice')}</p>
 
               <button 
                 type="submit"
+                disabled={submitting || cartItems.length === 0}
                 className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 text-black rounded-xl font-black text-lg transition-transform shadow-[0_0_20px_rgba(16,185,129,0.2)] hover:shadow-[0_0_25px_rgba(16,185,129,0.4)] active:scale-95 flex items-center justify-center gap-2"
               >
-                {t('confirm_payment')}
+                {submitting ? t('creating_order') : t('place_order')}
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor" className="w-5 h-5">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
                 </svg>

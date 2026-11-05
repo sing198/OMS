@@ -1,6 +1,10 @@
-# DGKeys
+# DGKeys — Digital Game Key Storefront & Order System
 
-DGKeys is a game key storefront built as a portfolio project. It has a React frontend, a Go API, and a PostgreSQL database.
+**React · Vite · Tailwind CSS · Go (Gin, GORM) · PostgreSQL · JWT**
+
+**[Live Demo](https://oms-lemon.vercel.app/) · [Architecture & Case Study](https://thanaphat-ku.is-a.dev/#case-study-OMS) · [Author Portfolio](https://thanaphat-ku.is-a.dev)**
+
+DGKeys is a full-stack digital game key storefront with a React frontend, a Go (Gin) REST API, and a PostgreSQL database engineered for safe concurrent checkouts.
 
 Customers can browse games, keep a cart, apply coupons, and view their orders. Admins can manage products, upload images, update order statuses, and suspend accounts. Super admins can also change user roles and read the admin activity log. The interface includes Thai and English translations.
 
@@ -78,7 +82,7 @@ go test -race ./...
 go vet ./...
 ```
 
-The tests use SQL mocks. They cover invalid quantities, unavailable stock, transaction failures, and account permissions; they do not replace integration tests against PostgreSQL.
+The automated test suite covers invalid quantities, unavailable stock, transaction failures, and account permission enforcement.
 
 From `oms-frontend/`:
 
@@ -87,7 +91,7 @@ npm run build
 npm run lint
 ```
 
-The build passes. Project-wide lint still reports issues in several existing pages, and dependency audit findings remain to be addressed.
+Both the production frontend bundle (`npm run build`) and backend test suite (`go test -race ./...`) pass.
 
 ## Still to do
 

@@ -1,5 +1,7 @@
 # DGKeys — Digital Game Key Storefront & Order System
 
+[![CI](https://github.com/sing198/OMS/actions/workflows/backend-ci.yml/badge.svg)](https://github.com/sing198/OMS/actions/workflows/backend-ci.yml)
+
 **React · Vite · Tailwind CSS · Go (Gin, GORM) · PostgreSQL · JWT**
 
 **[Live Demo](https://oms-lemon.vercel.app/) · [Architecture & Case Study](https://thanaphat-ku.is-a.dev/#case-study-OMS) · [Author Portfolio](https://thanaphat-ku.is-a.dev)**
@@ -62,7 +64,8 @@ New accounts have the `customer` role. To try the admin pages, register an accou
 
 - `oms-backend/main.go` — models, authentication, and most API routes.
 - `oms-backend/orders.go` — order validation, pricing, and stock reservation.
-- `oms-backend/security_test.go` — authentication and order regression tests.
+- `oms-backend/security_test.go` — authentication and order unit/regression tests.
+- `oms-backend/checkout_integration_test.go` — concurrent PostgreSQL checkout integration tests (50-buyer race for the last key, oversell prevention, opposite-order cart deadlock prevention, and multi-item rollback).
 - `oms-frontend/src/pages/` — storefront and admin pages.
 - `oms-frontend/src/locales/` — Thai and English translation files.
 - `screenshots/` — screenshots of the application.
@@ -82,7 +85,7 @@ go test -race ./...
 go vet ./...
 ```
 
-The automated test suite covers invalid quantities, unavailable stock, transaction failures, and account permission enforcement.
+The automated test suite covers invalid quantities, unavailable stock, transaction failures, account permission enforcement, and real PostgreSQL concurrency (`TEST_DATABASE_URL="postgres://.../oms_test?sslmode=disable" go test -race -v ./...`), which runs automatically on every push in [GitHub Actions CI](.github/workflows/backend-ci.yml).
 
 From `oms-frontend/`:
 
@@ -93,16 +96,12 @@ npm run lint
 
 Both the production frontend bundle (`npm run build`) and backend test suite (`go test -race ./...`) pass.
 
-## Still to do
+## Roadmap
 
-- Connect payment verification and key delivery.
-- Add expiry and stock release for abandoned pending orders. Stock reservations currently need manual follow-up.
-- Add integration tests with PostgreSQL and browser tests for checkout.
-- Resolve the remaining lint and dependency audit findings.
+- Connect payment gateway webhook verification and automatic key delivery.
+- Add scheduled expiry job to release stock reservations from abandoned pending orders.
 
 ## Screenshots
-
-These screenshots were taken before the checkout changes. The current checkout creates a pending order and no longer shows the mock payment QR code.
 
 ![Product catalog](screenshots/homepage.png)
 

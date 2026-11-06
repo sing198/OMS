@@ -9,12 +9,7 @@ export default function Cart() {
   const [cartItems, setCartItems] = useState([]);
   const navigate = useNavigate();
 
-  const { t, i18n } = useTranslation();
-
-  const changeLanguage = (lng) => {
-      i18n.changeLanguage(lng);
-      localStorage.setItem('language', lng); // บันทึกค่าไว้เผื่อลูกค้ารีเฟรชหน้าเว็บ
-  };
+  const { t } = useTranslation();
 
   useEffect(() => {
     const fetchAndVerifyCart = async () => {
@@ -165,7 +160,7 @@ export default function Cart() {
                       className="w-24 sm:w-28 aspect-[3/4] flex-shrink-0 bg-gray-900 rounded-xl overflow-hidden cursor-pointer"
                     >
                       <img 
-                        src={item.image_url || 'https://via.placeholder.com/300x400/1e293b/94a3b8'} 
+                        src={item.image_url ? (item.image_url.startsWith('/') ? `${import.meta.env.VITE_API_URL || 'http://localhost:8080'}${item.image_url}` : item.image_url) : 'https://via.placeholder.com/300x400/1e293b/94a3b8'} 
                         alt={item.name} 
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                       />

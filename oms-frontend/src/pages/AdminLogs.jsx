@@ -23,7 +23,7 @@ export default function AdminLogs() {
       });
       setLogs(response.data);
       setLoading(false);
-    } catch (error) {
+    } catch {
       toast.error('ไม่สามารถดึงประวัติการทำงานได้');
       setLoading(false);
     }

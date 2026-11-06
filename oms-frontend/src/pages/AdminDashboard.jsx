@@ -36,7 +36,7 @@ export default function AdminDashboard() {
       
       setProducts(response.data);
       setLoading(false);
-    } catch (error) {
+    } catch {
       toast.error('ไม่สามารถดึงข้อมูลสินค้าได้');
       setLoading(false);
     }
@@ -90,9 +90,9 @@ export default function AdminDashboard() {
           Authorization: `Bearer ${token}`
         }
       });
-      setFormData(prev => ({ ...prev, image_url: (import.meta.env.VITE_API_URL || 'http://localhost:8080') + response.data.url }));
+      setFormData(prev => ({ ...prev, image_url: response.data.url }));
       toast.success('อัปโหลดรูปภาพสำเร็จ', { id: toastId });
-    } catch (error) {
+    } catch {
       toast.error('อัปโหลดรูปภาพไม่สำเร็จ', { id: toastId });
     } finally {
       setUploadingImage(false);

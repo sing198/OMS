@@ -9,20 +9,14 @@ export default function ProductDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [game, setGame] = useState(null);
-  const { t, i18n } = useTranslation();
-
-  const changeLanguage = (lng) => {
-    i18n.changeLanguage(lng);
-    localStorage.setItem('language', lng); // บันทึกค่าไว้เผื่อลูกค้ารีเฟรชหน้าเว็บ
-  };
-
+  const { t } = useTranslation();
 
   useEffect(() => {
     const fetchGame = async () => {
       try {
         const response = await axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:8080'}/products/${id}`);
         setGame(response.data);
-      } catch (error) {
+      } catch {
         toast.error('ไม่พบข้อมูลเกมนี้');
         navigate('/products');
       }
@@ -36,14 +30,19 @@ export default function ProductDetail() {
     const existingItemIndex = cart.findIndex(item => item.id === game.id);
     
     if (existingItemIndex !== -1) {
-       cart[existingItemIndex].cartQuantity += 1;
+      if (cart[existingItemIndex].cartQuantity >= game.stock_quantity) {
+        toast.error(`เกม ${game.name} มีสต็อกไม่พอให้เพิ่มแล้ว!`);
+        return false;
+      }
+      cart[existingItemIndex].cartQuantity += 1;
     } else {
-       cart.push({ ...game, cartQuantity: 1 });
+      cart.push({ ...game, cartQuantity: 1 });
     }
     
     localStorage.setItem('cart', JSON.stringify(cart));
     window.dispatchEvent(new Event('cartUpdated'));
     toast.success('เพิ่มลงตะกร้าเรียบร้อยแล้ว!');
+    return true;
   };
 
   const handleBuyNow = () => {
@@ -89,7 +88,7 @@ export default function ProductDetail() {
           {/* ซ้าย: รูปปกเกม (แก้เป็น image_url) */}
           <div className="md:col-span-4 lg:col-span-4">
             <div className="w-full aspect-[3/4] bg-[#161821] rounded-xl overflow-hidden shadow-2xl border border-gray-800">
-              <img src={game.image_url || 'https://via.placeholder.com/400x600?text=No+Image'} alt={game.name} className="w-full h-full object-cover" />
+              <img src={game.image_url ? (game.image_url.startsWith('/') ? `${import.meta.env.VITE_API_URL || 'http://localhost:8080'}${game.image_url}` : game.image_url) : 'https://via.placeholder.com/400x600?text=No+Image'} alt={game.name} className="w-full h-full object-cover" />
             </div>
           </div>
 

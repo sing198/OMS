@@ -17,13 +17,13 @@ export default function AdminLayout() {
     }
     try {
       const payload = JSON.parse(atob(token.split('.')[1]));
-      setUserRole(payload.role);
-      if (payload.role !== 'admin' && payload.role !== 'superadmin') {
+      setUserRole(payload.role?.toLowerCase());
+      if (payload.role?.toLowerCase() !== 'admin' && payload.role?.toLowerCase() !== 'superadmin') {
         toast.error('⛔ คุณไม่มีสิทธิ์เข้าถึงหน้าผู้ดูแลระบบ!');
         navigate('/products');
         return;
       }
-    } catch (error) {
+    } catch {
       navigate('/');
     }
   }, [navigate]);

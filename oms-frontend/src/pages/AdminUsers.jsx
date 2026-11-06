@@ -25,30 +25,37 @@ export default function AdminUsers() {
   useEffect(() => {
     const token = localStorage.getItem('token');
     if (token) {
-      const payload = JSON.parse(atob(token.split('.')[1]));
-      setCurrentAdminId(Number(payload.user_id || payload.id));
-      setUserRole(payload.role);
+      try {
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        setCurrentAdminId(Number(payload.user_id || payload.id));
+        setUserRole(payload.role?.toLowerCase());
+      } catch {
+        // ignore invalid token format
+      }
     }
-    fetchUsers(token, currentPage, searchTerm);
-  }, [currentPage]); // เรียกใหม่เมื่อเปลี่ยนหน้า
+    fetchUsers(token, currentPage, searchTerm, roleFilter);
+  }, [currentPage, roleFilter]); // เรียกใหม่เมื่อเปลี่ยนหน้าหรือกรอง Role
 
-  const fetchUsers = async (token, page, search) => {
+  const fetchUsers = async (token, page, search, role = roleFilter) => {
     setLoading(true);
     try {
-      const response = await axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:8080'}/admin/users?page=${page}&limit=${itemsPerPage}&search=${search}`, {
+      let url = `${import.meta.env.VITE_API_URL || 'http://localhost:8080'}/admin/users?page=${page}&limit=${itemsPerPage}&search=${encodeURIComponent(search || '')}`;
+      if (role && role !== 'all') url += `&role=${encodeURIComponent(role)}`;
+
+      const response = await axios.get(url, {
         headers: { Authorization: `Bearer ${token}` }
       });
       
-      const dataWithStatus = response.data.data.map(user => ({
+      const dataWithStatus = (response.data.data || []).map(user => ({
         ...user,
         status: user.status || 'Active' 
       }));
       
       setUsers(dataWithStatus);
-      setTotalPages(response.data.meta.total_pages);
-      setTotalItems(response.data.meta.total);
+      setTotalPages(response.data.meta?.total_pages || 1);
+      setTotalItems(response.data.meta?.total || 0);
       setLoading(false);
-    } catch (error) {
+    } catch {
       toast.error('ไม่สามารถดึงข้อมูลผู้ใช้ได้');
       setLoading(false);
     }
@@ -98,19 +105,12 @@ export default function AdminUsers() {
     const token = localStorage.getItem('token');
 
     try {
-      // ดึงออเดอร์ทั้งหมดของลูกค้ามา
-      const response = await axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:8080'}/orders?limit=100`, {
+      const response = await axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:8080'}/orders?limit=100&user_id=${userId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-
-      const userOrders = response.data.data.filter(order => {
-        const orderUserId = order.user_id || order.UserID || order.userId;
-        return Number(orderUserId) === Number(userId);
-      });
-      
-      setSelectedUserOrders(userOrders);
+      setSelectedUserOrders(response.data.data || []);
       setModalLoading(false);
-    } catch (error) {
+    } catch {
       toast.error('ไม่สามารถเรียกดูประวัติคำสั่งซื้อได้');
       setIsModalOpen(false);
       setModalLoading(false);
@@ -120,12 +120,10 @@ export default function AdminUsers() {
   const handleSearchSubmit = (e) => {
     e.preventDefault();
     setCurrentPage(1);
-    fetchUsers(localStorage.getItem('token'), 1, searchTerm);
+    fetchUsers(localStorage.getItem('token'), 1, searchTerm, roleFilter);
   };
 
-  const filteredUsers = users.filter(user => {
-    return roleFilter === 'all' ? true : user.role === roleFilter;
-  });
+  const filteredUsers = users;
 
   return (
     <>

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -223,3 +224,46 @@ func TestIntegrationFailedOrderRollsBackStock(t *testing.T) {
 		t.Fatalf("orders = %d, want 0", n)
 	}
 }
+
+// Paid orders automatically generate digital keys, and expired pending orders restore stock.
+func TestIntegrationKeyDeliveryAndExpiredPendingOrderStockRestore(t *testing.T) {
+	db := integrationDB(t)
+	p := seedProduct(t, db, "Key & Expiry Game", 5)
+
+	ord1, err := placeOrder(db, 1, orderFor([2]int{p.ID, 2}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ord2, err := placeOrder(db, 2, orderFor([2]int{p.ID, 2}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := stockOf(t, db, p.ID); s != 1 {
+		t.Fatalf("stock after 2 reservations = %d, want 1", s)
+	}
+
+	// Transition ord1 to paid -> should generate 2 keys
+	paidOrd, err := updateOrderStatus(db, ord1.ID, "paid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paidOrd.Status != "paid" || len(paidOrd.Items) != 1 || len(strings.Split(paidOrd.Items[0].GameKeys, ",")) != 2 {
+		t.Fatalf("expected 2 delivered game keys on paid order, got %+v", paidOrd)
+	}
+
+	// Age ord2 by 1 hour and run expiry job -> should cancel ord2 and restore 2 stock (1 -> 3)
+	if err := db.Model(&Order{}).Where("id = ?", ord2.ID).Update("created_at", time.Now().Add(-time.Hour)).Error; err != nil {
+		t.Fatal(err)
+	}
+	released, err := releaseExpiredPendingOrders(db, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if released != 1 {
+		t.Fatalf("released = %d, want 1", released)
+	}
+	if s := stockOf(t, db, p.ID); s != 3 {
+		t.Fatalf("stock after expiring ord2 = %d, want 3", s)
+	}
+}
+

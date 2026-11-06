@@ -8,9 +8,9 @@
 
 DGKeys is a full-stack digital game key storefront with a React frontend, a Go (Gin) REST API, and a PostgreSQL database engineered for safe concurrent checkouts.
 
-Customers can browse games, keep a cart, apply coupons, and view their orders. Admins can manage products, upload images, update order statuses, and suspend accounts. Super admins can also change user roles and read the admin activity log. The interface includes Thai and English translations.
+Customers can browse games, keep a cart, apply coupons, and view their orders and delivered game keys. Admins can manage products, upload images, update order statuses, expire abandoned pending orders, and suspend accounts. Super admins can also change user roles and read the admin activity log. The interface includes Thai and English translations.
 
-Checkout currently creates a pending order and reserves stock. Payment confirmation is manual; there is no payment gateway or automatic key delivery yet.
+Checkout supports both **Instant Payment Simulation** (which immediately confirms payment and generates unique `DGK-XXXX-XXXX-XXXX-XXXX` digital activation keys) and **Reserve & Pay Later** (which reserves stock for 30 minutes). An HMAC-SHA256 verified `/webhooks/payment` endpoint is also included for external payment gateway callbacks, along with an automated background job that releases stock from abandoned pending orders.
 
 ## Running locally
 
@@ -96,10 +96,11 @@ npm run lint
 
 Both the production frontend bundle (`npm run build`) and backend test suite (`go test -race ./...`) pass.
 
-## Roadmap
+## Key Features
 
-- Connect payment gateway webhook verification and automatic key delivery.
-- Add scheduled expiry job to release stock reservations from abandoned pending orders.
+- **Concurrent-Safe Stock Reservation & Automatic Rollback** — Row-level `FOR UPDATE` locking in deterministic product ID order prevents overselling and deadlocks under high concurrency.
+- **Instant Digital Key Delivery & Webhook Verification** — Orders transitioning to `paid` (via instant checkout, customer payment, admin confirmation, or HMAC-SHA256 verified `POST /webhooks/payment`) automatically generate and attach digital activation keys (`DGK-XXXX-XXXX-XXXX-XXXX`) to each order item.
+- **Scheduled Pending Order Expiry & Stock Restoration** — A background worker automatically cancels abandoned `pending` orders older than `ORDER_EXPIRY_MINUTES` (default 30 minutes) and restores reserved product stock safely inside a transaction.
 
 ## Screenshots
 

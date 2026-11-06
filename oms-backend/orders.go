@@ -1,11 +1,16 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -109,3 +114,142 @@ func placeOrder(db *gorm.DB, userID int, req OrderRequest) (Order, error) {
 	})
 	return order, err
 }
+
+func generateGameKeys(count int) (string, error) {
+	if count <= 0 {
+		return "", nil
+	}
+	keys := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		b := make([]byte, 8)
+		if _, err := rand.Read(b); err != nil {
+			return "", err
+		}
+		h := strings.ToUpper(hex.EncodeToString(b))
+		keys = append(keys, fmt.Sprintf("DGK-%s-%s-%s-%s", h[0:4], h[4:8], h[8:12], h[12:16]))
+	}
+	return strings.Join(keys, ","), nil
+}
+
+// updateOrderStatus transitions an order safely inside a transaction:
+// - Transitioning to 'cancelled' from a non-cancelled state restores reserved product stock (locking products in ID order).
+// - Transitioning to 'paid', 'shipped', or 'delivered' generates and assigns digital game keys for any item missing keys.
+func updateOrderStatus(db *gorm.DB, orderID int, newStatus string) (Order, error) {
+	newStatus = strings.ToLower(strings.TrimSpace(newStatus))
+	validStatuses := map[string]bool{
+		"pending":   true,
+		"paid":      true,
+		"shipped":   true,
+		"delivered": true,
+		"cancelled": true,
+	}
+	if !validStatuses[newStatus] {
+		return Order{}, &orderError{400, "สถานะคำสั่งซื้อไม่ถูกต้อง"}
+	}
+
+	var updatedOrder Order
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var order Order
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&order, orderID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return &orderError{404, "ไม่พบคำสั่งซื้อ"}
+			}
+			return err
+		}
+
+		oldStatus := strings.ToLower(order.Status)
+		if oldStatus == newStatus {
+			updatedOrder = order
+			return nil
+		}
+
+		// Prevent un-cancelling an already cancelled order since stock was already released
+		if oldStatus == "cancelled" && newStatus != "cancelled" {
+			return &orderError{400, "ไม่สามารถเปลี่ยนสถานะคำสั่งซื้อที่ถูกยกเลิกไปแล้วได้"}
+		}
+
+		var items []OrderItem
+		if err := tx.Where("order_id = ?", order.ID).Order("id asc").Find(&items).Error; err != nil {
+			return err
+		}
+
+		if newStatus == "cancelled" && oldStatus != "cancelled" {
+			// Group quantities by product ID and lock products in ascending ID order to avoid deadlocks
+			qtyByProduct := make(map[int]int)
+			for _, item := range items {
+				qtyByProduct[item.ProductID] += item.Quantity
+			}
+			pids := make([]int, 0, len(qtyByProduct))
+			for pid := range qtyByProduct {
+				pids = append(pids, pid)
+			}
+			sort.Ints(pids)
+
+			for _, pid := range pids {
+				var prod Product
+				if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&prod, pid).Error; err != nil {
+					if errors.Is(err, gorm.ErrRecordNotFound) {
+						continue
+					}
+					return err
+				}
+				if err := tx.Model(&prod).Update("stock_quantity", prod.StockQuantity+qtyByProduct[pid]).Error; err != nil {
+					return err
+				}
+			}
+		}
+
+		if newStatus == "paid" || newStatus == "shipped" || newStatus == "delivered" {
+			for i := range items {
+				if strings.TrimSpace(items[i].GameKeys) == "" {
+					keys, err := generateGameKeys(items[i].Quantity)
+					if err != nil {
+						return err
+					}
+					items[i].GameKeys = keys
+					if err := tx.Model(&OrderItem{}).Where("id = ?", items[i].ID).Update("game_keys", keys).Error; err != nil {
+						return err
+					}
+				}
+			}
+		}
+
+		if err := tx.Model(&order).Update("status", newStatus).Error; err != nil {
+			return err
+		}
+		order.Status = newStatus
+		order.Items = items
+		updatedOrder = order
+		return nil
+	})
+	return updatedOrder, err
+}
+
+// releaseExpiredPendingOrders finds pending orders older than maxAge, cancels them, and restores stock.
+func releaseExpiredPendingOrders(db *gorm.DB, maxAge time.Duration) (int, error) {
+	cutoff := time.Now().Add(-maxAge)
+	var expiredOrders []Order
+	if err := db.Where("status = ? AND created_at < ?", "pending", cutoff).Find(&expiredOrders).Error; err != nil {
+		return 0, err
+	}
+	released := 0
+	for _, ord := range expiredOrders {
+		if _, err := updateOrderStatus(db, ord.ID, "cancelled"); err == nil {
+			released++
+		}
+	}
+	return released, nil
+}
+
+// verifyWebhookSignature verifies an HMAC-SHA256 webhook signature against the given secret.
+func verifyWebhookSignature(payload []byte, signatureHeader string, secret string) bool {
+	if secret == "" || signatureHeader == "" {
+		return false
+	}
+	sig := strings.TrimPrefix(strings.TrimSpace(signatureHeader), "sha256=")
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	expectedMAC := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(strings.ToLower(sig)), []byte(strings.ToLower(expectedMAC)))
+}
+

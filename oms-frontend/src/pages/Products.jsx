@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import Navbar from './Navbar';
 import { useTranslation } from 'react-i18next';
@@ -9,46 +9,60 @@ export default function Products() {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
-  const { t, i18n } = useTranslation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { t } = useTranslation();
 
   // Pagination & Filter State
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
-  const [search, setSearch] = useState('');
-  const [platform, setPlatform] = useState('');
+  const [search, setSearch] = useState(searchParams.get('search') || '');
+  const [platform, setPlatform] = useState(searchParams.get('platform') || '');
   const itemsPerPage = 10;
 
   useEffect(() => {
-    fetchProducts();
-  }, [currentPage, search, platform]); // Re-fetch when page changes
+    const urlSearch = searchParams.get('search') || '';
+    const urlPlatform = searchParams.get('platform') || '';
+    if (urlSearch !== search) setSearch(urlSearch);
+    if (urlPlatform !== platform) setPlatform(urlPlatform);
+  }, [searchParams]);
 
-  const fetchProducts = async () => {
+  const fetchProducts = useCallback(async () => {
     setLoading(true);
     try {
       let url = `${import.meta.env.VITE_API_URL || 'http://localhost:8080'}/products?page=${currentPage}&limit=${itemsPerPage}`;
-      if (search) url += `&search=${search}`;
-      if (platform) url += `&platform=${platform}`;
+      if (search) url += `&search=${encodeURIComponent(search)}`;
+      if (platform) url += `&platform=${encodeURIComponent(platform)}`;
 
       const response = await axios.get(url);
-      setProducts(response.data.data);
-      setTotalPages(response.data.meta.total_pages);
+      setProducts(response.data.data || []);
+      setTotalPages(response.data.meta?.total_pages || 1);
       setLoading(false);
-    } catch (error) {
+    } catch {
       toast.error('ไม่สามารถดึงข้อมูลสินค้าได้');
       setLoading(false);
     }
-  };
+  }, [currentPage, search, platform]);
+
+  useEffect(() => {
+    fetchProducts();
+  }, [fetchProducts]);
 
   const handleSearchSubmit = (e) => {
     e.preventDefault();
     setCurrentPage(1);
-    fetchProducts();
+    const params = {};
+    if (search.trim()) params.search = search.trim();
+    if (platform) params.platform = platform;
+    setSearchParams(params);
   };
 
   const handlePlatformChange = (p) => {
     setPlatform(p);
     setCurrentPage(1);
-    // 💡 ลบการ Fetch แบบแมนนวลออก ให้ useEffect จัดการเองเมื่อค่าเปลี่ยน
+    const params = {};
+    if (search.trim()) params.search = search.trim();
+    if (p) params.platform = p;
+    setSearchParams(params);
   };
 
   const addToCart = (product, isBuyNow = false) => {
@@ -99,6 +113,7 @@ export default function Products() {
                 <button onClick={() => handlePlatformChange('Steam')} className={`px-4 py-2 rounded-xl text-sm font-bold whitespace-nowrap transition-colors ${platform === 'Steam' ? 'bg-rose-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>Steam</button>
                 <button onClick={() => handlePlatformChange('Epic')} className={`px-4 py-2 rounded-xl text-sm font-bold whitespace-nowrap transition-colors ${platform === 'Epic' ? 'bg-rose-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>Epic Games</button>
                 <button onClick={() => handlePlatformChange('Origin')} className={`px-4 py-2 rounded-xl text-sm font-bold whitespace-nowrap transition-colors ${platform === 'Origin' ? 'bg-rose-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>Origin</button>
+                <button onClick={() => handlePlatformChange('Ubisoft')} className={`px-4 py-2 rounded-xl text-sm font-bold whitespace-nowrap transition-colors ${platform === 'Ubisoft' ? 'bg-rose-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>Ubisoft</button>
             </div>
             <form onSubmit={handleSearchSubmit} className="relative w-full md:w-72">
                 <input 

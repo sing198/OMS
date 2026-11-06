@@ -25,7 +25,7 @@ export default function AdminCoupons() {
       });
       setCoupons(response.data);
       setLoading(false);
-    } catch (error) {
+    } catch {
       toast.error('ไม่สามารถดึงข้อมูลคูปองได้');
       setLoading(false);
     }

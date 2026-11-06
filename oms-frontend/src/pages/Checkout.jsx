@@ -16,6 +16,7 @@ export default function Checkout() {
   });
   const [email, setEmail] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [paymentMode, setPaymentMode] = useState('instant'); // 'instant' | 'later'
   const [appliedCoupon, setAppliedCoupon] = useState('');
   const navigate = useNavigate();
 
@@ -70,6 +71,7 @@ export default function Checkout() {
 
     setSubmitting(true);
     const loadingToast = toast.loading(t('creating_order')); 
+    const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
     try {
       const orderItems = cartItems.map(item => ({
@@ -83,11 +85,21 @@ export default function Checkout() {
         delivery_email: email
       };
 
-      await axios.post(
-        `${import.meta.env.VITE_API_URL || 'http://localhost:8080'}/orders`, 
+      const orderRes = await axios.post(
+        `${baseUrl}/orders`, 
         payload, 
         { headers: { Authorization: `Bearer ${token}` } }
       );
+
+      const createdOrderId = orderRes.data.order_id;
+
+      if (paymentMode === 'instant' && createdOrderId) {
+        await axios.post(
+          `${baseUrl}/orders/${createdOrderId}/pay`,
+          {},
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+      }
 
       const currentCart = JSON.parse(localStorage.getItem('cart')) || [];
       const updatedCart = currentCart.filter(cartItem => 
@@ -96,9 +108,13 @@ export default function Checkout() {
       
       localStorage.setItem('cart', JSON.stringify(updatedCart)); 
       localStorage.removeItem('checkout_items'); 
-      window.dispatchEvent(new Event('cartUpdated')); // 👉 อัปเดต Navbar
+      window.dispatchEvent(new Event('cartUpdated'));
 
-      toast.success(t('order_pending_confirmation'), { id: loadingToast, duration: 5000 });
+      if (paymentMode === 'instant') {
+        toast.success('ชำระเงินสำเร็จ! จัดส่งคีย์เกมดิจิทัลเรียบร้อยแล้ว 🔑', { id: loadingToast, duration: 5000 });
+      } else {
+        toast.success(t('order_pending_confirmation'), { id: loadingToast, duration: 5000 });
+      }
       navigate('/my-orders'); 
 
     } catch (error) {
@@ -181,15 +197,57 @@ export default function Checkout() {
                   </p>
                 )}
               </div>
-    
-              <p className="text-amber-300 text-sm mb-8">{t('manual_payment_notice')}</p>
+
+              {/* Payment Method Selection */}
+              <div className="mb-8">
+                <label className="block text-sm font-bold text-gray-400 mb-3">{t('payment_method')}</label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setPaymentMode('instant')}
+                    className={`p-4 rounded-xl border text-left transition-all ${
+                      paymentMode === 'instant'
+                        ? 'bg-emerald-500/10 border-emerald-500 text-white shadow-lg shadow-emerald-500/10'
+                        : 'bg-[#0b0c10] border-gray-800 text-gray-400 hover:border-gray-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-black text-sm flex items-center gap-2">
+                        ⚡ Instant Pay (PromptPay)
+                      </span>
+                      <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-emerald-500 text-black">Instant Key</span>
+                    </div>
+                    <p className="text-xs text-gray-400">Receive digital activation keys immediately</p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setPaymentMode('later')}
+                    className={`p-4 rounded-xl border text-left transition-all ${
+                      paymentMode === 'later'
+                        ? 'bg-amber-500/10 border-amber-500 text-white shadow-lg shadow-amber-500/10'
+                        : 'bg-[#0b0c10] border-gray-800 text-gray-400 hover:border-gray-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-black text-sm">🕒 Reserve & Pay Later</span>
+                      <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-400">30m Hold</span>
+                    </div>
+                    <p className="text-xs text-gray-400">Reserve stock now and complete payment from My Orders</p>
+                  </button>
+                </div>
+
+                <p className="text-xs text-gray-400 mt-3 bg-[#0b0c10] p-3 rounded-xl border border-gray-800/80">
+                  {paymentMode === 'instant' ? t('instant_payment_desc') : t('manual_payment_notice')}
+                </p>
+              </div>
 
               <button 
                 type="submit"
                 disabled={submitting || cartItems.length === 0}
                 className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 text-black rounded-xl font-black text-lg transition-transform shadow-[0_0_20px_rgba(16,185,129,0.2)] hover:shadow-[0_0_25px_rgba(16,185,129,0.4)] active:scale-95 flex items-center justify-center gap-2"
               >
-                {submitting ? t('creating_order') : t('place_order')}
+                {submitting ? t('creating_order') : (paymentMode === 'instant' ? t('pay_now_instant') : t('place_order'))}
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor" className="w-5 h-5">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
                 </svg>
@@ -210,7 +268,7 @@ export default function Checkout() {
                   return (
                     <li key={item.id} className="flex gap-4 items-center">
                       <div className="w-12 h-16 bg-gray-900 rounded-md overflow-hidden flex-shrink-0 border border-gray-800">
-                        <img src={item.image_url || 'https://via.placeholder.com/150x200'} alt={item.name} className="w-full h-full object-cover" />
+                        <img src={item.image_url ? (item.image_url.startsWith('/') ? `${import.meta.env.VITE_API_URL || 'http://localhost:8080'}${item.image_url}` : item.image_url) : 'https://via.placeholder.com/150x200'} alt={item.name} className="w-full h-full object-cover" />
                       </div>
                       <div className="flex flex-col flex-1 truncate">
                         <span className="text-gray-200 font-bold text-sm truncate">{item.name}</span>

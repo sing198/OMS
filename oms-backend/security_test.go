@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http/httptest"
 	"strings"
@@ -80,7 +83,7 @@ func TestOrderTransaction(t *testing.T) {
 					mock.ExpectRollback()
 				} else {
 					query.WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(10, time.Now()))
-					mock.ExpectQuery(`INSERT INTO "order_items"`).WithArgs(10, 1, 2, 100.0).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(20))
+					mock.ExpectQuery(`INSERT INTO "order_items"`).WithArgs(10, 1, 2, 100.0, "").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(20))
 					if scenario == "commit_failure" {
 						mock.ExpectCommit().WillReturnError(errors.New("commit failed"))
 					} else {
@@ -162,3 +165,73 @@ func TestAuthenticationUsesCurrentAccount(t *testing.T) {
 		})
 	}
 }
+
+func TestUpdateOrderStatusKeyDeliveryAndCancelRestoresStock(t *testing.T) {
+	t.Run("paid_generates_keys", func(t *testing.T) {
+		db, mock := mockDB(t)
+		mock.ExpectBegin()
+		mock.ExpectQuery(`SELECT .* FROM "orders" .*FOR UPDATE`).WithArgs(10, 1).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "user_id", "total_price", "status", "delivery_email"}).AddRow(10, 1, 200.0, "pending", "buyer@example.com"))
+		mock.ExpectQuery(`SELECT .* FROM "order_items"`).WithArgs(10).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "order_id", "product_id", "quantity", "price_at_time_of_purchase", "game_keys"}).AddRow(20, 10, 1, 2, 100.0, ""))
+		mock.ExpectExec(`UPDATE "order_items" SET "game_keys"`).WithArgs(sqlmock.AnyArg(), 20).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(`UPDATE "orders" SET "status"`).WithArgs("paid", 10).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+
+		ord, err := updateOrderStatus(db, 10, "paid")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if ord.Status != "paid" || len(ord.Items) != 1 {
+			t.Fatalf("unexpected order state: %+v", ord)
+		}
+		keys := strings.Split(ord.Items[0].GameKeys, ",")
+		if len(keys) != 2 || !strings.HasPrefix(keys[0], "DGK-") {
+			t.Fatalf("expected 2 generated keys, got %q", ord.Items[0].GameKeys)
+		}
+	})
+
+	t.Run("cancel_restores_stock", func(t *testing.T) {
+		db, mock := mockDB(t)
+		mock.ExpectBegin()
+		mock.ExpectQuery(`SELECT .* FROM "orders" .*FOR UPDATE`).WithArgs(10, 1).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "user_id", "total_price", "status", "delivery_email"}).AddRow(10, 1, 200.0, "pending", "buyer@example.com"))
+		mock.ExpectQuery(`SELECT .* FROM "order_items"`).WithArgs(10).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "order_id", "product_id", "quantity", "price_at_time_of_purchase", "game_keys"}).AddRow(20, 10, 1, 2, 100.0, ""))
+		mock.ExpectQuery(`SELECT .* FROM "products" .*FOR UPDATE`).WithArgs(1, 1).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "name", "stock_quantity"}).AddRow(1, "Game", 3))
+		mock.ExpectExec(`UPDATE "products" SET "stock_quantity"`).WithArgs(5, 1).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(`UPDATE "orders" SET "status"`).WithArgs("cancelled", 10).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+
+		ord, err := updateOrderStatus(db, 10, "cancelled")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if ord.Status != "cancelled" {
+			t.Fatalf("want status cancelled, got %s", ord.Status)
+		}
+	})
+}
+
+func TestWebhookSignatureVerification(t *testing.T) {
+	payload := []byte(`{"order_id":10,"status":"paid"}`)
+	secret := "webhook-secret-key-for-hmac-test"
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	validSig := hex.EncodeToString(mac.Sum(nil))
+
+	if !verifyWebhookSignature(payload, validSig, secret) {
+		t.Fatal("expected valid signature to pass")
+	}
+	if !verifyWebhookSignature(payload, "sha256="+validSig, secret) {
+		t.Fatal("expected sha256= prefixed signature to pass")
+	}
+	if verifyWebhookSignature(payload, "invalid", secret) {
+		t.Fatal("expected invalid signature to fail")
+	}
+	if verifyWebhookSignature(payload, validSig, "") {
+		t.Fatal("expected empty secret to fail")
+	}
+}
+

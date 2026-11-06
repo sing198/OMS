@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -10,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"errors"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -73,6 +73,7 @@ type OrderItem struct {
 	ProductID             int     `json:"product_id"`
 	Quantity              int     `json:"quantity"`
 	PriceAtTimeOfPurchase float64 `json:"price_at_time_of_purchase"`
+	GameKeys              string  `json:"game_keys"`
 	Product               Product `json:"product" gorm:"foreignKey:ProductID"`
 }
 
@@ -260,6 +261,23 @@ func main() {
 	if err := DB.AutoMigrate(&User{}, &Category{}, &Tag{}, &Product{}, &Order{}, &OrderItem{}, &Coupon{}, &AdminLog{}); err != nil {
 		log.Fatal("Failed to migrate database: ", err)
 	}
+
+	// 🔄 Background Job: คืนสต็อกจากออเดอร์ที่ค้างสถานะ pending เกินเวลาที่กำหนด (ค่าเริ่มต้น 30 นาที)
+	expiryMinutes := 30
+	if envMin := os.Getenv("ORDER_EXPIRY_MINUTES"); envMin != "" {
+		if parsed, err := strconv.Atoi(envMin); err == nil && parsed > 0 {
+			expiryMinutes = parsed
+		}
+	}
+	go func(maxAge time.Duration) {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if released, err := releaseExpiredPendingOrders(DB, maxAge); err == nil && released > 0 {
+				fmt.Printf("♻️ Auto-expired %d abandoned pending order(s) and restored stock\n", released)
+			}
+		}
+	}(time.Duration(expiryMinutes) * time.Minute)
 
 	// สร้างแฟ้มอัปโหลดรูปภาพถ้ายังไม่มี
 	if _, err := os.Stat("uploads"); os.IsNotExist(err) {
@@ -452,6 +470,44 @@ func main() {
 		c.JSON(200, tags)
 	})
 
+	// 💳 [NEW] Payment Gateway Webhook Verification & Automatic Key Delivery
+	r.POST("/webhooks/payment", func(c *gin.Context) {
+		webhookSecret := os.Getenv("WEBHOOK_SECRET")
+		if webhookSecret == "" {
+			webhookSecret = os.Getenv("JWT_SECRET")
+		}
+		signature := c.GetHeader("X-Webhook-Signature")
+		bodyBytes, err := c.GetRawData()
+		if err != nil || !verifyWebhookSignature(bodyBytes, signature, webhookSecret) {
+			c.JSON(401, gin.H{"error": "Invalid webhook signature"})
+			return
+		}
+		var payload struct {
+			OrderID int    `json:"order_id" binding:"required"`
+			Status  string `json:"status" binding:"required"`
+		}
+		if err := json.Unmarshal(bodyBytes, &payload); err != nil || payload.OrderID <= 0 {
+			c.JSON(400, gin.H{"error": "Invalid webhook payload"})
+			return
+		}
+		status := strings.ToLower(strings.TrimSpace(payload.Status))
+		if status != "paid" && status != "cancelled" {
+			c.JSON(400, gin.H{"error": "Unsupported webhook status"})
+			return
+		}
+		updatedOrder, err := updateOrderStatus(DB, payload.OrderID, status)
+		if err != nil {
+			var oe *orderError
+			if errors.As(err, &oe) {
+				c.JSON(oe.status, gin.H{"error": oe.message})
+			} else {
+				c.JSON(500, gin.H{"error": "Failed to process webhook"})
+			}
+			return
+		}
+		c.JSON(200, gin.H{"message": "Webhook processed", "order": updatedOrder})
+	})
+
 	// ==========================================
 	// 🟡 โซน 2: Protected API (ต้อง Login / ใช้ Token)
 	// ==========================================
@@ -460,7 +516,79 @@ func main() {
 
 	protected.POST("/orders", createOrderHandler)
 
-	// 🔍 [MODIFY] GET /orders พร้อมระบบ Pagination
+	// 💳 [NEW] Instant Payment Simulation & Automatic Key Delivery for Customer
+	protected.POST("/orders/:id/pay", func(c *gin.Context) {
+		userID := c.MustGet("user_id").(int)
+		role := c.MustGet("role").(string)
+		orderID, err := strconv.Atoi(c.Param("id"))
+		if err != nil || orderID <= 0 {
+			c.JSON(400, gin.H{"error": "รหัสคำสั่งซื้อไม่ถูกต้อง"})
+			return
+		}
+		var order Order
+		if err := DB.First(&order, orderID).Error; err != nil {
+			c.JSON(404, gin.H{"error": "ไม่พบคำสั่งซื้อ"})
+			return
+		}
+		if order.UserID != userID && role != "admin" && role != "superadmin" {
+			c.JSON(403, gin.H{"error": "ไม่มีสิทธิ์เข้าถึงคำสั่งซื้อนี้"})
+			return
+		}
+		updatedOrder, err := updateOrderStatus(DB, orderID, "paid")
+		if err != nil {
+			var oe *orderError
+			if errors.As(err, &oe) {
+				c.JSON(oe.status, gin.H{"error": oe.message})
+			} else {
+				c.JSON(500, gin.H{"error": "ไม่สามารถยืนยันการชำระเงินได้"})
+			}
+			return
+		}
+		c.JSON(200, gin.H{
+			"message": "ชำระเงินสำเร็จและจัดส่งคีย์เกมอัตโนมัติเรียบร้อยแล้ว",
+			"order":   updatedOrder,
+		})
+	})
+
+	// ❌ [NEW] Customer Cancel Pending Order & Restore Stock
+	protected.POST("/orders/:id/cancel", func(c *gin.Context) {
+		userID := c.MustGet("user_id").(int)
+		role := c.MustGet("role").(string)
+		orderID, err := strconv.Atoi(c.Param("id"))
+		if err != nil || orderID <= 0 {
+			c.JSON(400, gin.H{"error": "รหัสคำสั่งซื้อไม่ถูกต้อง"})
+			return
+		}
+		var order Order
+		if err := DB.First(&order, orderID).Error; err != nil {
+			c.JSON(404, gin.H{"error": "ไม่พบคำสั่งซื้อ"})
+			return
+		}
+		if order.UserID != userID && role != "admin" && role != "superadmin" {
+			c.JSON(403, gin.H{"error": "ไม่มีสิทธิ์ยกเลิกคำสั่งซื้อนี้"})
+			return
+		}
+		if strings.ToLower(order.Status) != "pending" && role != "admin" && role != "superadmin" {
+			c.JSON(400, gin.H{"error": "สามารถยกเลิกได้เฉพาะคำสั่งซื้อที่รอชำระเงินเท่านั้น"})
+			return
+		}
+		updatedOrder, err := updateOrderStatus(DB, orderID, "cancelled")
+		if err != nil {
+			var oe *orderError
+			if errors.As(err, &oe) {
+				c.JSON(oe.status, gin.H{"error": oe.message})
+			} else {
+				c.JSON(500, gin.H{"error": "ไม่สามารถยกเลิกคำสั่งซื้อได้"})
+			}
+			return
+		}
+		c.JSON(200, gin.H{
+			"message": "ยกเลิกคำสั่งซื้อและคืนสต็อกสินค้าเรียบร้อยแล้ว",
+			"order":   updatedOrder,
+		})
+	})
+
+	// 🔍 [MODIFY] GET /orders พร้อมระบบ Pagination, Search และ Filter
 	protected.GET("/orders", func(c *gin.Context) {
 		userID := c.MustGet("user_id").(int)
 		role := c.MustGet("role").(string)
@@ -473,11 +601,34 @@ func main() {
 		if limit < 1 {
 			limit = 10
 		}
+		if limit > 100 {
+			limit = 100
+		}
+
+		statusFilter := strings.ToLower(strings.TrimSpace(c.Query("status")))
+		search := strings.TrimSpace(c.Query("search"))
+		filterUserID := strings.TrimSpace(c.Query("user_id"))
 
 		query := DB.Model(&Order{})
 
 		if role != "admin" && role != "superadmin" {
 			query = query.Where("user_id = ?", userID)
+		} else if filterUserID != "" {
+			if uid, err := strconv.Atoi(filterUserID); err == nil {
+				query = query.Where("user_id = ?", uid)
+			}
+		}
+
+		if statusFilter != "" && statusFilter != "all" {
+			query = query.Where("LOWER(status) = ?", statusFilter)
+		}
+
+		if search != "" {
+			if searchID, err := strconv.Atoi(strings.TrimPrefix(search, "#")); err == nil {
+				query = query.Where("id = ? OR user_id = ? OR delivery_email ILIKE ?", searchID, searchID, "%"+search+"%")
+			} else {
+				query = query.Where("delivery_email ILIKE ?", "%"+search+"%")
+			}
 		}
 
 		var total int64
@@ -490,13 +641,23 @@ func main() {
 			return
 		}
 
+		// Calculate overall summary stats for admin dashboard
+		var totalRevenue float64
+		var pendingCount int64
+		if role == "admin" || role == "superadmin" {
+			DB.Model(&Order{}).Where("status IN ?", []string{"paid", "shipped", "delivered"}).Select("COALESCE(SUM(total_price), 0)").Scan(&totalRevenue)
+			DB.Model(&Order{}).Where("status = ?", "pending").Count(&pendingCount)
+		}
+
 		c.JSON(200, gin.H{
 			"data": orders,
 			"meta": gin.H{
-				"total":       total,
-				"page":        page,
-				"limit":       limit,
-				"total_pages": (total + int64(limit) - 1) / int64(limit),
+				"total":         total,
+				"page":          page,
+				"limit":         limit,
+				"total_pages":   (total + int64(limit) - 1) / int64(limit),
+				"total_revenue": totalRevenue,
+				"pending_count": pendingCount,
 			},
 		})
 	})
@@ -574,6 +735,11 @@ func main() {
 			c.JSON(400, gin.H{"error": "ข้อมูลไม่ถูกต้อง"})
 			return
 		}
+		coupon.Code = strings.ToUpper(strings.TrimSpace(coupon.Code))
+		if coupon.Code == "" || coupon.Discount <= 0 || coupon.Discount > 100 {
+			c.JSON(400, gin.H{"error": "รหัสคูปองและส่วนลด (1-100%) ไม่ถูกต้อง"})
+			return
+		}
 		if err := DB.Create(&coupon).Error; err != nil {
 			c.JSON(500, gin.H{"error": "สร้างคูปองไม่สำเร็จ หรือรหัสซ้ำ"})
 			return
@@ -596,6 +762,11 @@ func main() {
 			c.JSON(400, gin.H{"error": "ข้อมูลไม่ถูกต้อง"})
 			return
 		}
+		input.Code = strings.ToUpper(strings.TrimSpace(input.Code))
+		if input.Code == "" || input.Discount <= 0 || input.Discount > 100 {
+			c.JSON(400, gin.H{"error": "รหัสคูปองและส่วนลด (1-100%) ไม่ถูกต้อง"})
+			return
+		}
 		coupon.Code = input.Code
 		coupon.Discount = input.Discount
 		DB.Save(&coupon)
@@ -614,9 +785,14 @@ func main() {
 		c.JSON(200, gin.H{"message": "ลบคูปองสำเร็จ"})
 	})
 
-	// 🔍 [NEW] Admin Order Status Update
+	// 🔍 [MODIFY] Admin Order Status Update (พร้อมระบบตัด/คืนสต็อกและออกคีย์เกมอัตโนมัติ)
 	admin.PATCH("/orders/:id/status", func(c *gin.Context) {
 		id := c.Param("id")
+		orderID, err := strconv.Atoi(id)
+		if err != nil || orderID <= 0 {
+			c.JSON(400, gin.H{"error": "รหัสคำสั่งซื้อไม่ถูกต้อง"})
+			return
+		}
 		var input struct {
 			Status string `json:"status" binding:"required"`
 		}
@@ -625,14 +801,41 @@ func main() {
 			return
 		}
 
-		if err := DB.Model(&Order{}).Where("id = ?", id).Update("status", input.Status).Error; err != nil {
-			c.JSON(500, gin.H{"error": "อัปเดตสถานะไม่สำเร็จ"})
+		updatedOrder, err := updateOrderStatus(DB, orderID, input.Status)
+		if err != nil {
+			var oe *orderError
+			if errors.As(err, &oe) {
+				c.JSON(oe.status, gin.H{"error": oe.message})
+			} else {
+				c.JSON(500, gin.H{"error": "อัปเดตสถานะไม่สำเร็จ"})
+			}
 			return
 		}
 
 		adminID, adminName := getAdminInfo(c)
-		LogAdminAction(adminID, adminName, "UPDATE_ORDER_STATUS", id, fmt.Sprintf("เปลี่ยนสถานะคำสั่งซื้อเป็น %s", input.Status))
-		c.JSON(200, gin.H{"message": "เปลี่ยนสถานะคำสั่งซื้อสำเร็จ"})
+		LogAdminAction(adminID, adminName, "UPDATE_ORDER_STATUS", id, fmt.Sprintf("เปลี่ยนสถานะคำสั่งซื้อเป็น %s", updatedOrder.Status))
+		c.JSON(200, gin.H{"message": "เปลี่ยนสถานะคำสั่งซื้อสำเร็จ", "order": updatedOrder})
+	})
+
+	// 🔄 [NEW] Admin Expire Abandoned Pending Orders Now
+	admin.POST("/orders/expire-pending", func(c *gin.Context) {
+		var input struct {
+			MaxAgeMinutes int `json:"max_age_minutes"`
+		}
+		_ = c.ShouldBindJSON(&input)
+		if input.MaxAgeMinutes <= 0 {
+			input.MaxAgeMinutes = 30
+		}
+		released, err := releaseExpiredPendingOrders(DB, time.Duration(input.MaxAgeMinutes)*time.Minute)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "ไม่สามารถยกเลิกออเดอร์ที่หมดอายุได้"})
+			return
+		}
+		adminID, adminName := getAdminInfo(c)
+		if released > 0 {
+			LogAdminAction(adminID, adminName, "EXPIRE_PENDING_ORDERS", fmt.Sprintf("%d", released), fmt.Sprintf("ยกเลิกออเดอร์ที่ค้างชำระเกิน %d นาที จำนวน %d รายการ และคืนสต็อก", input.MaxAgeMinutes, released))
+		}
+		c.JSON(200, gin.H{"message": "ตรวจสอบและคืนสต็อกสำเร็จ", "released_count": released})
 	})
 
 	// API เดิม: Products Management (Admin)
@@ -763,16 +966,29 @@ func main() {
 		c.JSON(200, gin.H{"message": "เปิดการขายสินค้าสำเร็จ"})
 	})
 
-	// 🔍 [MODIFY] Users API (Admin) พร้อม Pagination
+	// 🔍 [MODIFY] Users API (Admin) พร้อม Pagination & Role Filter
 	admin.GET("/users", func(c *gin.Context) {
 		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
-		search := c.Query("search")
+		if page < 1 {
+			page = 1
+		}
+		if limit < 1 {
+			limit = 10
+		}
+		if limit > 100 {
+			limit = 100
+		}
+		search := strings.TrimSpace(c.Query("search"))
+		roleFilter := strings.ToLower(strings.TrimSpace(c.Query("role")))
 
 		query := DB.Model(&User{})
 
 		if search != "" {
 			query = query.Where("name ILIKE ? OR email ILIKE ?", "%"+search+"%", "%"+search+"%")
+		}
+		if roleFilter != "" && roleFilter != "all" {
+			query = query.Where("LOWER(role) = ?", roleFilter)
 		}
 
 		var total int64
@@ -780,7 +996,7 @@ func main() {
 
 		var users []User
 		offset := (page - 1) * limit
-		if err := query.Offset(offset).Limit(limit).Find(&users).Error; err != nil {
+		if err := query.Order("id asc").Offset(offset).Limit(limit).Find(&users).Error; err != nil {
 			c.JSON(500, gin.H{"error": "ไม่สามารถดึงข้อมูลผู้ใช้ได้"})
 			return
 		}
@@ -820,13 +1036,18 @@ func main() {
 			c.JSON(400, gin.H{"error": "ข้อมูลไม่ถูกต้อง"})
 			return
 		}
-
-		if err := DB.Model(&User{}).Where("id = ?", targetUserID).Update("role", input.Role).Error; err != nil {
-			c.JSON(500, gin.H{"error": "ไม่สามารถอัปเดตสิทธิ์ได้: " + err.Error()})
+		normalizedRole := strings.ToLower(strings.TrimSpace(input.Role))
+		if normalizedRole != "customer" && normalizedRole != "admin" && normalizedRole != "superadmin" {
+			c.JSON(400, gin.H{"error": "รูปแบบสิทธิ์ไม่ถูกต้อง (อนุญาตเฉพาะ customer, admin, superadmin)"})
 			return
 		}
 
-		LogAdminAction(adminID, adminName, "CHANGE_USER_ROLE", targetUserID, fmt.Sprintf("เปลี่ยนสิทธิ์ผู้ใช้ ID %s เป็น %s", targetUserID, input.Role))
+		if err := DB.Model(&User{}).Where("id = ?", targetUserID).Update("role", normalizedRole).Error; err != nil {
+			c.JSON(500, gin.H{"error": "ไม่สามารถอัปเดตสิทธิ์ได้"})
+			return
+		}
+
+		LogAdminAction(adminID, adminName, "CHANGE_USER_ROLE", targetUserID, fmt.Sprintf("เปลี่ยนสิทธิ์ผู้ใช้ ID %s เป็น %s", targetUserID, normalizedRole))
 		c.JSON(200, gin.H{"message": "อัปเดตสิทธิ์เรียบร้อยแล้ว"})
 	})
 
@@ -863,9 +1084,13 @@ func main() {
 			c.JSON(400, gin.H{"error": "ข้อมูลไม่ถูกต้อง"})
 			return
 		}
+		if input.Status != "Active" && input.Status != "Banned" && input.Status != "Suspended" {
+			c.JSON(400, gin.H{"error": "สถานะผู้ใช้งานไม่ถูกต้อง"})
+			return
+		}
 
 		if err := DB.Model(&User{}).Where("id = ?", targetUserID).Update("status", input.Status).Error; err != nil {
-			c.JSON(500, gin.H{"error": "ไม่สามารถเปลี่ยนสถานะได้: " + err.Error()})
+			c.JSON(500, gin.H{"error": "ไม่สามารถเปลี่ยนสถานะได้"})
 			return
 		}
 

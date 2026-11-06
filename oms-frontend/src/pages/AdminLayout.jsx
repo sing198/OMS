@@ -127,9 +127,32 @@ export default function AdminLayout() {
       </aside>
 
       {/* 🟢 พื้นที่แสดงเนื้อหาของแต่ละหน้าที่จะสลับเปลี่ยนไปมา */}
-      <main className="flex-1 p-6 md:p-10 overflow-y-auto h-screen">
-        <Outlet /> 
-      </main>
+      <div className="flex-1 flex flex-col h-screen overflow-hidden">
+        {/* Mobile Top Navigation for Admin */}
+        <div className="md:hidden bg-[#12141c] border-b border-gray-800 px-4 py-3 flex flex-col gap-3">
+          <div className="flex justify-between items-center">
+            <h1 className="text-xl font-black tracking-tighter text-white cursor-pointer" onClick={() => navigate('/products')}>
+              DGKeys<span className="text-rose-600">.</span> <span className="text-[10px] text-rose-500 uppercase tracking-widest ml-1">Admin</span>
+            </h1>
+            <button onClick={handleLogout} className="text-xs font-bold text-rose-400 border border-rose-500/30 px-3 py-1 rounded-lg">
+              Logout
+            </button>
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1 custom-scrollbar text-xs font-bold">
+            <button onClick={() => navigate('/admin')} className={`px-3 py-1.5 rounded-lg whitespace-nowrap ${isActive('/admin') ? 'bg-rose-600 text-white' : 'bg-[#0b0c10] text-gray-400'}`}>Products</button>
+            <button onClick={() => navigate('/admin/orders')} className={`px-3 py-1.5 rounded-lg whitespace-nowrap ${isActive('/admin/orders') ? 'bg-rose-600 text-white' : 'bg-[#0b0c10] text-gray-400'}`}>Orders</button>
+            <button onClick={() => navigate('/admin/users')} className={`px-3 py-1.5 rounded-lg whitespace-nowrap ${isActive('/admin/users') ? 'bg-rose-600 text-white' : 'bg-[#0b0c10] text-gray-400'}`}>Users</button>
+            <button onClick={() => navigate('/admin/coupons')} className={`px-3 py-1.5 rounded-lg whitespace-nowrap ${isActive('/admin/coupons') ? 'bg-rose-600 text-white' : 'bg-[#0b0c10] text-gray-400'}`}>Coupons</button>
+            {userRole === 'superadmin' && (
+              <button onClick={() => navigate('/admin/logs')} className={`px-3 py-1.5 rounded-lg whitespace-nowrap ${isActive('/admin/logs') ? 'bg-rose-600 text-white' : 'bg-[#0b0c10] text-gray-400'}`}>Logs</button>
+            )}
+          </div>
+        </div>
+
+        <main className="flex-1 p-6 md:p-10 overflow-y-auto">
+          <Outlet /> 
+        </main>
+      </div>
 
     </div>
   );

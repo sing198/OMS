@@ -6,6 +6,7 @@ import toast from 'react-hot-toast';
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const navigate = useNavigate();
 
   const handleLogin = async (e) => {
@@ -82,12 +83,16 @@ export default function Login() {
               <label className="block text-sm font-bold text-gray-400 uppercase tracking-wide">
                 Password
               </label>
-              <a href="#" className="text-xs text-rose-500 font-bold hover:text-rose-400 transition-colors">
-                Forgot Password?
-              </a>
+              <button
+                type="button"
+                onClick={() => setShowPassword(prev => !prev)}
+                className="text-xs text-gray-400 font-bold hover:text-white transition-colors cursor-pointer"
+              >
+                {showPassword ? 'Hide' : 'Show'}
+              </button>
             </div>
             <input 
-              type="password" 
+              type={showPassword ? 'text' : 'password'} 
               value={password} 
               onChange={(e) => setPassword(e.target.value)} 
               required 
@@ -99,7 +104,7 @@ export default function Login() {
           {/* ปุ่ม Login */}
           <button 
             type="submit" 
-            className="w-full mt-4 bg-rose-600 hover:bg-rose-500 text-white py-4 px-4 rounded-xl font-black text-lg transition-transform shadow-[0_0_20px_rgba(225,29,72,0.2)] hover:shadow-[0_0_25px_rgba(225,29,72,0.4)] active:scale-95 flex items-center justify-center gap-2"
+            className="w-full mt-4 bg-rose-600 hover:bg-rose-500 text-white py-4 px-4 rounded-xl font-black text-lg transition-transform shadow-[0_0_20px_rgba(225,29,72,0.2)] hover:shadow-[0_0_25px_rgba(225,29,72,0.4)] active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
           >
             SIGN IN
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor" className="w-5 h-5">
@@ -108,8 +113,19 @@ export default function Login() {
           </button>
         </form>
 
-        {/* สมัครสมาชิก (Mockup) */}
-        <div className="mt-8 text-center text-sm text-gray-500 font-medium">
+        {/* ปุ่มเข้าชมหน้าร้านโดยไม่ต้องล็อกอิน */}
+        <div className="mt-4">
+          <button
+            type="button"
+            onClick={() => navigate('/products')}
+            className="w-full py-3 bg-[#0b0c10] hover:bg-gray-800/80 text-gray-300 hover:text-white border border-gray-800 rounded-xl font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer"
+          >
+            🎮 Browse Store as Guest
+          </button>
+        </div>
+
+        {/* สมัครสมาชิก */}
+        <div className="mt-6 text-center text-sm text-gray-500 font-medium">
           Don't have an account?{' '}
           <span 
             onClick={() => navigate('/register')} 

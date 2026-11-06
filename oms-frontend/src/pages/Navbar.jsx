@@ -76,14 +76,6 @@ export default function Navbar() {
     }
   };
 
-  const handlePlatformNav = (platform) => {
-    if (platform) {
-      navigate(`/products?platform=${encodeURIComponent(platform)}`);
-    } else {
-      navigate('/products');
-    }
-  };
-
   return (
     <header className="bg-[#12141c]/95 backdrop-blur-md border-b border-gray-800 sticky top-0 z-50">
       <div className="max-w-[1400px] mx-auto px-6 py-4 flex items-center justify-between gap-6">
@@ -173,19 +165,6 @@ export default function Navbar() {
             )}
           </div>
         </div>
-      </div>
-
-      {/* Sub Navbar (Platforms & Quick Filters) */}
-      <div className="max-w-[1400px] mx-auto px-6 py-2.5 flex gap-6 text-xs font-bold text-gray-400 border-t border-gray-800/80 overflow-x-auto">
-        <button type="button" onClick={() => handlePlatformNav('')} className="hover:text-white cursor-pointer transition-colors uppercase">All Platforms</button>
-        <button type="button" onClick={() => handlePlatformNav('Steam')} className="hover:text-white cursor-pointer transition-colors uppercase">Steam</button>
-        <button type="button" onClick={() => handlePlatformNav('Epic')} className="hover:text-white cursor-pointer transition-colors uppercase">Epic Games</button>
-        <button type="button" onClick={() => handlePlatformNav('Origin')} className="hover:text-white cursor-pointer transition-colors uppercase">EA / Origin</button>
-        <button type="button" onClick={() => handlePlatformNav('Ubisoft')} className="hover:text-white cursor-pointer transition-colors uppercase">Ubisoft</button>
-        <div className="flex-1"></div>
-        <button type="button" onClick={() => navigate('/my-orders')} className="hover:text-emerald-400 text-emerald-500/90 cursor-pointer transition-colors flex items-center gap-1">
-          <span>🔑</span> {t('my_orders')}
-        </button>
       </div>
     </header>
   );
